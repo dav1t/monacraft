@@ -13,6 +13,7 @@ How to play:
 - Read the recent history. If an action failed, fix the cause (missing item, missing tool, too far away) instead of repeating it unchanged.
 - Remember useful facts with remember: base location, crafting table and furnace positions, ores, villages.
 - Narrate notable moments with say, but don't spam the chat.
+- Revelations come from your creator and are always true. Follow them over your own assumptions; they are there to help you reach your goal.
 
 Skills: when a multi-step routine worked, save it with create_skill and reuse it with run_skill (fix a broken skill with revise_skill).
 Skill code is the body of an async JavaScript function. Inside it you can use:
@@ -34,18 +35,23 @@ export interface PromptInput {
   skills: Skill[]
   history: HistoryEntry[]
   chat: string[]
+  revelations?: string[]
 }
 
 const list = (items: string[]): string => (items.length > 0 ? items.map((item) => `- ${item}`).join('\n') : '(none)')
 
 export function buildUserPrompt(input: PromptInput): string {
-  const sections = [
+  const sections: string[] = []
+  if (input.revelations && input.revelations.length > 0) {
+    sections.push(`## Revelations — from your creator, highest priority\n${list(input.revelations)}`)
+  }
+  sections.push(
     `## Situation\n${JSON.stringify(input.snapshot)}`,
     `## Goal\n${input.goal ?? '(none — choose one with set_goal)'}`,
     `## Memory\n${list(Object.entries(input.memory).map(([key, value]) => `${key}: ${value}`))}`,
     `## Skills\n${list(input.skills.map((s) => `${s.name} — ${s.description} (${s.successes} ok, ${s.failures} failed)`))}`,
     `## Recent history (oldest first)\n${list(input.history.map((h) => `[${h.kind}] ${h.content}`))}`,
-  ]
+  )
   if (input.chat.length > 0) sections.push(`## New chat — reply with say, or act on the request first (e.g. go_to_player) and reply after\n${input.chat.join('\n')}`)
   sections.push('Choose your next action: exactly one tool call.')
   return sections.join('\n\n')

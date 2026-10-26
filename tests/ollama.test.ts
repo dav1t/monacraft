@@ -58,7 +58,7 @@ describe('OllamaProvider in tools mode', () => {
     const provider = new OllamaProvider({ model: 'gemma3:4b', mode: 'tools', client })
     const err = await provider.decide(request).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(FatalLLMError)
-    expect((err as Error).message).toBe('gemma3:4b does not support tool calling — set OLLAMA_MODE=json')
+    expect((err as Error).message).toBe('gemma3:4b does not support tool calling — switch the Ollama mode to json (OLLAMA_MODE=json)')
   })
 
   it('accepts a tool call written as JSON text', async () => {
@@ -90,5 +90,31 @@ describe('OllamaProvider in json mode', () => {
     const { client } = fakeClient({ content: '{"thought":"","tool":"fly","args":{}}' })
     const provider = new OllamaProvider({ model: 'm', mode: 'json', client })
     await expect(provider.decide(request)).rejects.toThrow(LLMFormatError)
+  })
+})
+
+describe('OllamaProvider streaming', () => {
+  it('streams thinking, text and tool calls when someone listens', async () => {
+    const parts: Partial<Message>[] = [
+      { thinking: 'need ' },
+      { thinking: 'wood' },
+      { content: 'Chopping.' },
+      { tool_calls: [{ function: { name: 'mine', arguments: { block_type: 'oak_log' } } }] },
+    ]
+    const requests: ChatRequest[] = []
+    const client = {
+      chat: async (req: ChatRequest) => {
+        requests.push(req)
+        return (async function* () {
+          for (const part of parts) yield { message: { role: 'assistant', content: '', ...part } }
+        })()
+      },
+    } as unknown as Pick<Ollama, 'chat'>
+    const deltas: string[] = []
+    const provider = new OllamaProvider({ model: 'm', mode: 'tools', client })
+    const decision = await provider.decide({ ...request, onStream: (d) => deltas.push(`${d.kind}:${d.text}`) })
+    expect(requests[0]?.stream).toBe(true)
+    expect(decision).toEqual({ thought: 'Chopping.', tool: 'mine', args: { block_type: 'oak_log' } })
+    expect(deltas).toEqual(['thinking:need ', 'thinking:wood', 'text:Chopping.', 'tool:mine {"block_type":"oak_log"}'])
   })
 })

@@ -38,3 +38,12 @@ describe('buildSystemPrompt', () => {
     expect(text).toContain('explore in long hops (50+ blocks) only when nothing useful is near.')
   })
 })
+
+describe('buildUserPrompt revelations', () => {
+  it('puts revelations first and omits the section when there are none', () => {
+    const base = { snapshot: {}, goal: null, memory: {}, skills: [], history: [], chat: [] }
+    const text = buildUserPrompt({ ...base, revelations: ['craft planks from logs'] })
+    expect(text.startsWith('## Revelations — from your creator, highest priority\n- craft planks from logs\n\n## Situation')).toBe(true)
+    expect(buildUserPrompt({ ...base, revelations: [] })).not.toContain('Revelations')
+  })
+})

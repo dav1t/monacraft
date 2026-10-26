@@ -4,24 +4,38 @@
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.15.0",
-  "engines": { "node": ">=22.13" },
+  "engines": {
+    "node": ">=22.13"
+  },
   "scripts": {
     "start": "tsx --disable-warning=ExperimentalWarning src/index.ts",
+    "panel": "vite build && tsx --disable-warning=ExperimentalWarning src/panel.ts",
+    "panel:dev": "tsx --disable-warning=ExperimentalWarning src/panel.ts --dev",
+    "build:ui": "vite build",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc"
+    "typecheck": "tsc && tsc -p ui"
   },
-  "pnpm": { "onlyBuiltDependencies": ["esbuild"] },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  },
   "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^7.3.1",
     "@types/node": "^22.20.5",
+    "svelte": "^5.57.3",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
+    "vite": "^8.3.5",
     "vitest": "^5.0.5"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.3.0",
     "mineflayer": "4.39.0",
     "mineflayer-pathfinder": "2.4.5",
     "ollama": "0.6.4",
+    "openai": "^7.44.0",
     "vec3": "^0.2.0",
     "zod": "^4.6.7"
   }

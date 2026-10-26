@@ -23,6 +23,11 @@ CREATE TABLE IF NOT EXISTS history (
   content    TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE TABLE IF NOT EXISTS revelations (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  content    TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 `
 
 export function openDatabase(path: string): DatabaseSync {

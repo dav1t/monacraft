@@ -50,3 +50,42 @@ describe('HistoryRepo', () => {
     expect(history.recent(3).map((h) => `${h.kind}:${h.content}`)).toEqual(['action:step 3', 'action:step 4', 'chat:<Steve> hi'])
   })
 })
+
+describe('HistoryRepo editing', () => {
+  it('pages newest first, deletes single entries and clears', () => {
+    const { history } = fresh()
+    for (const n of [1, 2, 3, 4, 5]) history.add('event', `e${n}`)
+    const first = history.page(2)
+    expect(first.map((h) => h.content)).toEqual(['e5', 'e4'])
+    expect(history.page(2, first[1]?.id).map((h) => h.content)).toEqual(['e3', 'e2'])
+    expect(history.delete(first[0]!.id)).toBe(true)
+    expect(history.delete(first[0]!.id)).toBe(false)
+    expect(history.page(10)).toHaveLength(4)
+    history.clear()
+    expect(history.page(10)).toEqual([])
+  })
+})
+
+describe('SkillRepo.delete', () => {
+  it('removes a skill once', () => {
+    const { skills } = fresh()
+    skills.create({ name: 'chop', description: 'a', code: 'b' })
+    expect(skills.delete('chop')).toBe(true)
+    expect(skills.delete('chop')).toBe(false)
+  })
+})
+
+describe('RevelationRepo', () => {
+  it('adds, edits, lists in order and deletes', () => {
+    const { revelations } = fresh()
+    const a = revelations.add('iron is below y=16')
+    revelations.add('your base is at 0 64 0')
+    expect(a).toMatchObject({ id: expect.any(Number), content: 'iron is below y=16' })
+    expect(revelations.update(a.id, 'iron is common below y=16')).toBe(true)
+    expect(revelations.list().map((r) => r.content)).toEqual(['iron is common below y=16', 'your base is at 0 64 0'])
+    expect(revelations.delete(a.id)).toBe(true)
+    expect(revelations.delete(a.id)).toBe(false)
+    expect(revelations.update(a.id, 'x')).toBe(false)
+    expect(revelations.list()).toHaveLength(1)
+  })
+})

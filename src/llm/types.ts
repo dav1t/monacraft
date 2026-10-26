@@ -6,13 +6,21 @@ export interface Decision {
   args: Record<string, unknown>
 }
 
+/** A piece of the reply as the model writes it: hidden reasoning, visible text, or tool-call arguments. */
+export interface StreamDelta {
+  kind: 'thinking' | 'text' | 'tool'
+  text: string
+}
+
 export interface DecideRequest {
   system: string
   user: string
   tools: ToolSpec[]
+  /** When set, the provider streams and reports the reply as it arrives. */
+  onStream?: (delta: StreamDelta) => void
 }
 
-/** Picks exactly one tool call per request. Implementations: Ollama now, Claude later. */
+/** Picks exactly one tool call per request. Implementations: Ollama, OpenAI-compatible, Anthropic. */
 export interface LLMProvider {
   readonly name: string
   decide(request: DecideRequest): Promise<Decision>
