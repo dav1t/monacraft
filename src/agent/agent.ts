@@ -101,7 +101,7 @@ export class Agent {
 
   onChat(username: string, message: string): void {
     this.#unreadChat.push(`<${username}> ${message}`)
-    this.interrupt(`${username} said something`)
+    this.interrupt(`${username} said something — answer, then pick this action up again if it still makes sense`)
   }
 
   /** Abort the running action, if any. */

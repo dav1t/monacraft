@@ -72,7 +72,7 @@ describe('Agent.step', () => {
     await sleep(50)
     agent.onChat('Steve', 'come here')
     await step
-    expect(lastEntry()).toContain('→ interrupted: Steve said something')
+    expect(lastEntry()).toContain('→ interrupted: Steve said something — answer, then pick this action up again if it still makes sense')
     await agent.step()
     expect(prompts[1]).toContain('## New chat — reply with say, or act on the request first (e.g. go_to_player) and reply after\n<Steve> come here')
     expect(repos.history.recent(2)[0]?.content).toBe('<Steve> come here')
