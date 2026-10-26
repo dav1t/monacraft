@@ -35,16 +35,20 @@ export class OpenAIProvider implements LLMProvider {
     let text = ''
     let reasoning = ''
     const calls: { name: string; arguments: string }[] = []
+    let promptTokens: number | undefined
     try {
       const stream = await this.#client.chat.completions.create({
         model: this.#options.model,
         stream: true,
+        // The last chunk then reports token usage (servers that don't support it leave it out).
+        stream_options: { include_usage: true },
         messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
         tools: tools.map(toOpenAITool),
         tool_choice: 'auto',
         parallel_tool_calls: false,
       })
       for await (const chunk of stream) {
+        if (chunk.usage?.prompt_tokens) promptTokens = chunk.usage.prompt_tokens
         const delta = chunk.choices[0]?.delta
         if (!delta) continue
         const thinking = (delta as ReasoningDelta).reasoning_content ?? (delta as ReasoningDelta).reasoning
@@ -80,10 +84,11 @@ export class OpenAIProvider implements LLMProvider {
       } catch {
         throw new LLMFormatError(`tool arguments are not valid JSON: ${truncate(call.arguments, 160)}`)
       }
-      return { thought: text.trim() || truncate(reasoning.trim().split('\n')[0] ?? '', 160), tool: call.name, args: toArgs(args) }
+      const thought = text.trim() || truncate(reasoning.trim().split('\n')[0] ?? '', 160)
+      return { thought, tool: call.name, args: toArgs(args), ...(promptTokens && { promptTokens }) }
     }
     const fromText = parseDecisionText(text, names)
-    if (fromText) return fromText
+    if (fromText) return { ...fromText, ...(promptTokens && { promptTokens }) }
     throw new LLMFormatError(`no tool call in reply: "${truncate(text, 160)}"`)
   }
 }

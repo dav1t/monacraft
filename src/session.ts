@@ -1,13 +1,17 @@
 import type { Bot } from 'mineflayer'
 import { Agent, type AgentEvent } from './agent/agent.ts'
+import { GoalKeeper } from './agent/goals.ts'
 import { buildSystemPrompt } from './agent/prompt.ts'
 import { connectBot, type ConnectOptions } from './bot/connect.ts'
 import type { Repos } from './db/repos.ts'
 import { formatPos, isHostile, nearestEntity } from './lib/mc.ts'
+import { errorMessage } from './lib/text.ts'
 import type { LLMProvider } from './llm/types.ts'
 import { startReflexes } from './reflexes.ts'
+import { botWorld } from './planning/world.ts'
 import { formatSnapshot } from './sensors/snapshot.ts'
 import { readWorldState } from './sensors/world.ts'
+import { SleepScheduler, type SleepEvent } from './sleep.ts'
 import { allTools } from './tools/index.ts'
 import { ToolRegistry } from './tools/registry.ts'
 
@@ -17,6 +21,7 @@ export interface SessionOptions {
   repos: Repos
   log: (line: string) => void
   onAgentEvent?: (event: AgentEvent) => void
+  onSleepEvent?: (event: SleepEvent) => void
   /** The connection closed without stop() being called (kicked, server down…). */
   onEnd?: (reason: string) => void
 }
@@ -25,10 +30,11 @@ export interface SessionOptions {
 export interface Session {
   bot: Bot
   agent: Agent
+  sleep: SleepScheduler
   stop(): void
 }
 
-export async function startSession({ minecraft, provider, repos, log, onAgentEvent, onEnd }: SessionOptions): Promise<Session> {
+export async function startSession({ minecraft, provider, repos, log, onAgentEvent, onSleepEvent, onEnd }: SessionOptions): Promise<Session> {
   const { host, port, username, version } = minecraft
   log(`connecting to ${host}:${port} as ${username} (Minecraft ${version}), brain: ${provider.name}`)
   const bot = await connectBot(minecraft)
@@ -44,14 +50,22 @@ export async function startSession({ minecraft, provider, repos, log, onAgentEve
     observe: () => formatSnapshot(readWorldState(bot)),
     context: { bot, repos, log },
     log,
+    goals: new GoalKeeper(repos, botWorld(bot)),
     ...(onAgentEvent && { onEvent: onAgentEvent }),
   })
+  const sleep = new SleepScheduler({ bot, agent, repos, provider, name: bot.username, log, ...(onSleepEvent && { onEvent: onSleepEvent }) })
 
   const onPlayerMessage = (from: string, message: string): void => {
     if (from !== bot.username) agent.onChat(from, message)
   }
   bot.on('chat', onPlayerMessage)
   bot.on('whisper', onPlayerMessage)
+  // Put on the best armor carried, now and after every respawn (picked-up armor is handled by armorManager itself).
+  const wearArmor = (): void => {
+    bot.armorManager.equipAll().catch((err: unknown) => log(`could not put on armor: ${errorMessage(err)}`))
+  }
+  wearArmor()
+  bot.on('spawn', wearArmor)
   bot.on('death', () => {
     repos.history.add('event', `you died at ${formatPos(bot.entity.position)} and respawned; your items dropped there`)
     agent.interrupt('you died')
@@ -67,12 +81,14 @@ export async function startSession({ minecraft, provider, repos, log, onAgentEve
   bot.on('error', (err) => log(`bot error: ${err.message}`))
 
   const stopReflexes = startReflexes(bot, agent, repos, log)
+  const stopSleep = sleep.start()
   let stopped = false
   bot.on('end', (reason) => {
     if (stopped) return
     stopped = true
     log(`disconnected (${reason})`)
     stopReflexes()
+    stopSleep()
     agent.stop()
     onEnd?.(reason)
   })
@@ -80,10 +96,12 @@ export async function startSession({ minecraft, provider, repos, log, onAgentEve
   return {
     bot,
     agent,
+    sleep,
     stop() {
       if (stopped) return
       stopped = true
       stopReflexes()
+      stopSleep()
       agent.stop()
       bot.quit()
     },

@@ -1,6 +1,7 @@
 import type { Bot } from 'mineflayer'
 import { z } from 'zod'
 import type { Item } from '../lib/mc.ts'
+import { readEquipped } from '../sensors/world.ts'
 import { collectNearbyDrops } from './mining.ts'
 import { defineTool, ToolError } from './types.ts'
 
@@ -37,8 +38,13 @@ export const equip = defineTool({
   description: 'Hold or wear an item.',
   schema: z.object({ item: z.string(), slot: z.enum(['hand', 'off-hand', 'head', 'torso', 'legs', 'feet']).default('hand') }),
   run: async ({ item, slot }, { bot }) => {
+    const index = bot.getEquipmentDestSlot(slot)
+    if (bot.inventory.slots[index]?.name === item) return `${item} is already equipped (${slot})`
     const found = bot.inventory.items().find((i) => i.name === item)
-    if (!found) throw new ToolError(`no ${item} in inventory`)
+    if (!found) {
+      const worn = Object.entries(readEquipped(bot)).find(([, name]) => name === item)
+      throw new ToolError(worn ? `${item} is already equipped (${worn[0]})` : `no ${item} in inventory`)
+    }
     await bot.equip(found, slot)
     return `equipped ${item} (${slot})`
   },

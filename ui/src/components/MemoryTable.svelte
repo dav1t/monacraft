@@ -13,6 +13,10 @@
     if (next) attempt(() => api('PUT', path(k), { value: next }))
   }
 
+  function togglePin(k: string, pinned: boolean): void {
+    attempt(() => api('PUT', `${path(k)}/pin`, { pinned: !pinned }))
+  }
+
   function remove(k: string): void {
     if (confirm(`Forget “${k}”?`)) attempt(() => api('DELETE', path(k)))
   }
@@ -30,10 +34,13 @@
 <div class="mc-panel db-panel">
   <div class="panel-title">Memory <span class="dim">facts the bot remembers</span></div>
   <table class="mc-table">
-    <thead><tr><th>Key</th><th>Value</th><th></th></tr></thead>
+    <thead><tr><th title="Pinned facts are never changed or deleted by sleep">📌</th><th>Key</th><th>Value</th><th></th></tr></thead>
     <tbody>
-      {#each Object.entries(panel.memory) as [k, v] (k)}
-        <tr>
+      {#each panel.memory as { key: k, value: v, pinned } (k)}
+        <tr class:pinned>
+          <td class="actions">
+            <button class="mc-btn tiny" class:active={pinned} title={pinned ? 'Unpin' : 'Pin: sleep never changes or deletes it'} onclick={() => togglePin(k, pinned)}>📌</button>
+          </td>
           <td>{k}</td>
           <td>{v}</td>
           <td class="actions">
@@ -42,7 +49,7 @@
           </td>
         </tr>
       {:else}
-        <tr><td colspan="3" class="dim">The bot remembers nothing yet.</td></tr>
+        <tr><td colspan="4" class="dim">The bot remembers nothing yet.</td></tr>
       {/each}
     </tbody>
   </table>

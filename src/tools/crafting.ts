@@ -23,9 +23,20 @@ function explainMissing(bot: Bot, itemId: number, item: string, haveTable: boole
       .map((d) => `${-d.count} ${bot.registry.items[d.id]?.name ?? d.id}`)
       .join(' + '),
   )
-  const tableNote = recipes.every((r) => r.requiresTable) && !haveTable ? '; needs a crafting_table within 32 blocks' : ''
+  const needsTable = recipes.every((r) => r.requiresTable) && !haveTable
+  // When the table is the only thing missing, say exactly that; listing ingredients the bot already has misleads it.
+  const hasIngredients = recipes.some((r) => maxCrafts(bot, r) >= 1)
+  if (needsTable && hasIngredients) {
+    const carried = bot.inventory.items().some((i) => i.name === 'crafting_table')
+    return `you have the ingredients for ${item}; only a crafting_table within 32 blocks is missing — ${
+      carried ? 'you carry one: place it next to you first (place)' : 'craft one (4 planks) and place it first'
+    }`
+  }
+  const tableNote = needsTable ? '; needs a crafting_table within 32 blocks' : ''
   return `cannot craft ${item} yet. One craft needs ${[...new Set(options)].join(' OR ')}${tableNote}`
 }
+
+const WEARABLE = /_(helmet|chestplate|leggings|boots)$|^shield$/
 
 export const craft = defineTool({
   name: 'craft',
@@ -42,7 +53,13 @@ export const craft = defineTool({
     }
     const times = Math.min(Math.ceil(count / recipe.result.count), maxCrafts(bot, recipe))
     await bot.craft(recipe, times, recipe.requiresTable ? (table ?? undefined) : undefined)
-    return `crafted ${times * recipe.result.count} ${item} (now have ${bot.inventory.count(def.id, null)})`
+    const crafted = `crafted ${times * recipe.result.count} ${item} (now have ${bot.inventory.count(def.id, null)})`
+    // armorManager only reacts to armor picked up from the ground; crafted armor (and shields) are put on here.
+    if (WEARABLE.test(item)) {
+      await bot.armorManager.equipAll()
+      return `${crafted}, now wearing the best armor you have`
+    }
+    return crafted
   },
 })
 

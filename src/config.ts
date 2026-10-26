@@ -88,7 +88,7 @@ function parseThink(value: string | undefined): ThinkSetting {
 const EFFORTS: readonly AnthropicEffort[] = ['low', 'medium', 'high', 'xhigh', 'max']
 
 function parseEffort(value: string | undefined): AnthropicEffort {
-  if (value === undefined) return 'medium'
+  if (value === undefined) return 'high'
   if ((EFFORTS as readonly string[]).includes(value)) return value as AnthropicEffort
   throw new Error(`ANTHROPIC_EFFORT must be one of ${EFFORTS.join(', ')} (got "${value}")`)
 }

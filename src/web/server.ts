@@ -4,6 +4,7 @@ import { extname, join, normalize, sep } from 'node:path'
 import { z } from 'zod'
 import { errorMessage } from '../lib/text.ts'
 import type { Controller } from './controller.ts'
+import { itemIcon } from './icons.ts'
 import { minecraftSchema, settingsPatchSchema } from './settings.ts'
 
 const TYPES: Record<string, string> = {
@@ -25,6 +26,21 @@ type Handler = (ctx: { params: string[]; body: unknown; url: URL }) => unknown |
 const content = z.object({ content: z.string().trim().min(1).max(2000) })
 const memoryValue = z.object({ value: z.string().trim().min(1) })
 const skillUpdate = z.object({ description: z.string().trim().min(1), code: z.string().min(1) })
+const title = z.object({ title: z.string().trim().min(2).max(200) })
+const goalEdit = z.object({
+  title: z.string().trim().min(2).max(200).optional(),
+  status: z.enum(['todo', 'active', 'done', 'failed', 'dropped', 'paused']).optional(),
+})
+const pin = z.object({ pinned: z.boolean() })
+
+/** Runs a goal-tree change; its errors (no active goal, offline…) are the client's to fix. */
+async function clientError<T>(fn: () => T | Promise<T>): Promise<T> {
+  try {
+    return await fn()
+  } catch (err) {
+    throw new BadRequest(errorMessage(err))
+  }
+}
 
 function parse<S extends z.ZodType>(schema: S, value: unknown): z.output<S> {
   const result = schema.safeParse(value)
@@ -67,7 +83,12 @@ function routes(controller: Controller): [string, RegExp, Handler][] {
       return result
     }],
 
-    ['GET', /^\/api\/memory$/, () => repos.memory.all()],
+    ['GET', /^\/api\/memory$/, () => repos.memory.list()],
+    ['PUT', /^\/api\/memory\/([^/]+)\/pin$/, ({ params, body }) => {
+      const result = found(repos.memory.setPinned(params[0] as string, parse(pin, body).pinned), 'memory key')
+      controller.changed('memory')
+      return result
+    }],
     ['PUT', /^\/api\/memory\/([^/]+)$/, ({ params, body }) => {
       repos.memory.set(params[0] as string, parse(memoryValue, body).value)
       controller.changed('memory')
@@ -88,6 +109,58 @@ function routes(controller: Controller): [string, RegExp, Handler][] {
     ['DELETE', /^\/api\/skills\/([^/]+)$/, ({ params }) => {
       const result = found(repos.skills.delete(params[0] as string), 'skill')
       controller.changed('skills')
+      return result
+    }],
+
+    ['GET', /^\/api\/goals$/, () => controller.goalsView()],
+    ['POST', /^\/api\/goals$/, ({ body }) => clientError(() => controller.setGoal(parse(title, body).title))],
+    ['PUT', /^\/api\/goals\/(\d+)$/, async ({ params, body }) => {
+      const result = found(await clientError(() => controller.goals().edit(Number(params[0]), parse(goalEdit, body))), 'goal')
+      controller.changed('goals')
+      return result
+    }],
+    ['POST', /^\/api\/goals\/(\d+)\/children$/, async ({ params, body }) => {
+      const row = await clientError(() => controller.goals().addChild(Number(params[0]), parse(title, body).title))
+      controller.changed('goals')
+      return row
+    }],
+    ['DELETE', /^\/api\/goals\/(\d+)$/, ({ params }) => {
+      const result = found(repos.goals.delete(Number(params[0])), 'goal')
+      controller.changed('goals')
+      return result
+    }],
+
+    ['GET', /^\/api\/days$/, ({ url }) => repos.days.list(Math.min(Number(url.searchParams.get('limit')) || 30, 200))],
+    ['POST', /^\/api\/nap$/, async () => {
+      await clientError(() => controller.nap())
+      return { ok: true }
+    }],
+    ['GET', /^\/api\/lessons$/, () => repos.lessons.list()],
+    ['POST', /^\/api\/lessons$/, ({ body }) => {
+      const lesson = repos.lessons.add(parse(content, body).content, 'player')
+      controller.changed('lessons')
+      return lesson
+    }],
+    ['PUT', /^\/api\/lessons\/(\d+)$/, ({ params, body }) => {
+      const result = found(repos.lessons.update(Number(params[0]), parse(content, body).content), 'lesson')
+      controller.changed('lessons')
+      return result
+    }],
+    ['DELETE', /^\/api\/lessons\/(\d+)$/, ({ params }) => {
+      const result = found(repos.lessons.delete(Number(params[0])), 'lesson')
+      controller.changed('lessons')
+      return result
+    }],
+    ['GET', /^\/api\/structures$/, () => repos.structures.list()],
+    ['DELETE', /^\/api\/structures\/([^/]+)$/, ({ params }) => {
+      const result = found(repos.structures.delete(params[0] as string), 'structure')
+      controller.changed('structures')
+      return result
+    }],
+    ['GET', /^\/api\/templates$/, () => repos.templates.list()],
+    ['DELETE', /^\/api\/templates\/(goal|subgoal)\/([^/]+)$/, ({ params }) => {
+      const result = found(repos.templates.delete(params[0] as 'goal' | 'subgoal', params[1] as string), 'template')
+      controller.changed('templates')
       return result
     }],
 
@@ -193,6 +266,13 @@ export function createPanelServer(controller: Controller, { bindHost, staticDir,
         return res.end('The panel UI is not built. Run `pnpm panel` (builds first) or `pnpm panel:dev`.')
       }
       if (req.method === 'GET' && url.pathname === '/api/events') return openEventStream(controller, req, res)
+      const icon = req.method === 'GET' ? /^\/api\/icons\/([a-z0-9_]+)\.png$/.exec(url.pathname) : null
+      if (icon) {
+        const png = itemIcon(icon[1]!)
+        if (!png) return sendJson(res, 404, { error: 'no icon' })
+        res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'public, max-age=86400' })
+        return res.end(png)
+      }
 
       let pathMatched = false
       for (const [method, pattern, handler] of table) {

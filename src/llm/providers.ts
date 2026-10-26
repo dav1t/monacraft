@@ -53,6 +53,10 @@ export class SwitchableProvider implements LLMProvider {
     return this.#current.name
   }
 
+  get contextWindow(): number | undefined {
+    return this.#current.contextWindow
+  }
+
   set(provider: LLMProvider): void {
     this.#current = provider
     for (const wake of this.#waiters.splice(0)) wake()
@@ -65,5 +69,10 @@ export class SwitchableProvider implements LLMProvider {
 
   decide(request: DecideRequest): Promise<Decision> {
     return this.#current.decide(request)
+  }
+
+  /** A conversation stays with the provider that started it; the agent starts a new one when the name changes. */
+  get startConversation(): LLMProvider['startConversation'] {
+    return this.#current.startConversation
   }
 }

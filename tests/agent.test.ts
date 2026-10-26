@@ -5,7 +5,7 @@ import { z } from 'zod'
 import { Agent } from '../src/agent/agent.ts'
 import { openDatabase } from '../src/db/database.ts'
 import { createRepos } from '../src/db/repos.ts'
-import { FatalLLMError, LLMFormatError, type Decision, type LLMProvider } from '../src/llm/types.ts'
+import { FatalLLMError, LLMFormatError, type ConverseRequest, type Decision, type LLMProvider } from '../src/llm/types.ts'
 import { ToolRegistry } from '../src/tools/registry.ts'
 import { defineTool } from '../src/tools/types.ts'
 
@@ -91,6 +91,26 @@ describe('Agent.step', () => {
     expect(await agent.exclusive('reflex: eating', async () => 'ate bread')).toBe('ate bread')
     await step
     expect(lastEntry()).toContain('→ interrupted: reflex: eating')
+  })
+
+  it('warns when the same call fails the same way again, and forgets after a success', async () => {
+    const { agent, repos, lastEntry } = setup([decide('broken', { a: 1, b: 2 }), decide('broken', { b: 2, a: 1 }), decide('echo', { text: 'x' }), decide('broken')])
+    await agent.step()
+    expect(lastEntry()).toContain('→ error: no pickaxe')
+    await agent.step()
+    expect(lastEntry()).toMatch(/^broken failed 2 times in a row with the same error — repeating it will not work/)
+    await agent.step()
+    await agent.step()
+    expect(repos.history.recent(10).filter((h) => h.content.startsWith('broken failed'))).toHaveLength(1)
+  })
+
+  it('warns when the same call keeps giving the same result', async () => {
+    const { agent, repos } = setup([decide('echo', { text: 'x' }), decide('echo', { text: 'x' }), decide('echo', { text: 'x' })])
+    await agent.step()
+    await agent.step()
+    expect(repos.history.recent(10).some((h) => h.content.startsWith('you called echo'))).toBe(false)
+    await agent.step()
+    expect(repos.history.recent(1)[0]?.content).toMatch(/^you called echo with the same arguments 3 times in a row and got the same result/)
   })
 
   it('records invalid LLM replies so the model can correct itself', async () => {
@@ -180,5 +200,118 @@ describe('Agent.step', () => {
     await agent.step()
     expect(ran).toBe(false)
     expect(repos.history.recent(1)[0]?.content).toContain('skipped: shutting down')
+  })
+})
+
+describe('Agent token usage', () => {
+  it('reports the provider count, or estimates about 4 characters per token', async () => {
+    const events: unknown[] = []
+    const run = async (reply: Decision) => {
+      const repos = createRepos(openDatabase(':memory:'))
+      const agent = new Agent({
+        provider: { name: 'fake', decide: async () => reply },
+        registry: new ToolRegistry().register(echo),
+        repos,
+        systemPrompt: 'sys',
+        observe: () => ({}),
+        context: { bot: {} as Bot, repos, log: () => {} },
+        log: () => {},
+        onEvent: (e) => e.type === 'usage' && events.push(e),
+      })
+      await agent.step()
+    }
+    await run({ ...decide('echo', { text: 'x' }), promptTokens: 1234 })
+    await run(decide('echo', { text: 'x' }))
+    expect(events[0]).toEqual({ type: 'usage', promptTokens: 1234, estimated: false })
+    expect(events[1]).toMatchObject({ type: 'usage', estimated: true, promptTokens: expect.any(Number) })
+  })
+})
+
+describe('Agent conversations', () => {
+  /** A provider that keeps one conversation per startConversation() and records every turn. */
+  function conversational(replies: Array<Decision | Error>, tokens = 1_000) {
+    const turns: { conversation: number; request: ConverseRequest }[] = []
+    let started = 0
+    const provider: LLMProvider = {
+      name: 'fake',
+      decide: async () => {
+        throw new Error('decide() should not be used')
+      },
+      startConversation: () => {
+        const id = ++started
+        return {
+          closed: false,
+          contextTokens: tokens,
+          next: async (request: ConverseRequest) => {
+            turns.push({ conversation: id, request })
+            const reply = replies.shift()
+            if (!reply) throw new Error('out of replies')
+            if (reply instanceof Error) throw reply
+            return reply
+          },
+        }
+      },
+    }
+    const repos = createRepos(openDatabase(':memory:'))
+    const agent = new Agent({
+      provider,
+      registry: new ToolRegistry().register(echo, broken),
+      repos,
+      systemPrompt: 'sys',
+      observe: () => ({ health: 20 }),
+      context: { bot: {} as Bot, repos, log: () => {} },
+      log: () => {},
+    })
+    return { agent, repos, turns }
+  }
+
+  it('sends the full prompt once, then the tool result and a short update', async () => {
+    const { agent, turns } = conversational([decide('echo', { text: 'a' }), decide('broken'), decide('echo', { text: 'b' })])
+    await agent.step()
+    await agent.step()
+    await agent.step()
+    expect(turns.map((t) => t.conversation)).toEqual([1, 1, 1])
+    expect(turns[0]!.request.user).toContain('## Memory')
+    expect(turns[0]!.request.result).toBeUndefined()
+    expect(turns[1]!.request.result).toEqual({ outcome: 'ok: echo a', isError: false })
+    expect(turns[1]!.request.user).not.toContain('## Memory')
+    expect(turns[1]!.request.user).toContain('## Situation\n{"health":20}')
+    expect(turns[2]!.request.result).toEqual({ outcome: 'error: no pickaxe', isError: true })
+  })
+
+  it('reports what happened between steps, but not its own actions again', async () => {
+    const { agent, repos, turns } = conversational([decide('echo', { text: 'a' }), decide('echo', { text: 'b' })])
+    await agent.step()
+    repos.history.add('event', 'reflex (eating): ate bread')
+    agent.onChat('Steve', 'hi')
+    await agent.step()
+    const update = turns[1]!.request.user
+    expect(update).toContain('[event] reflex (eating): ate bread')
+    expect(update).toContain('<Steve> hi')
+    expect(update).not.toContain('echo {"text":"a"}')
+  })
+
+  it('starts a new conversation on a new day and when the context gets too long', async () => {
+    const day = conversational([decide('echo', { text: 'a' }), decide('echo', { text: 'b' })])
+    await day.agent.step()
+    day.repos.days.add({ kind: 'sleep', startedAt: '2026-10-26 20:00:00', journal: 'slept', historyUntil: day.repos.history.lastId(), skillsReview: [] })
+    await day.agent.step()
+    expect(day.turns.map((t) => t.conversation)).toEqual([1, 2])
+    expect(day.turns[1]!.request.user).toContain('## Memory')
+    expect(day.turns[1]!.request.result).toBeUndefined()
+
+    const long = conversational([decide('echo', { text: 'a' }), decide('echo', { text: 'b' })], 500_000)
+    await long.agent.step()
+    await long.agent.step()
+    expect(long.turns.map((t) => t.conversation)).toEqual([1, 2])
+  })
+
+  it('keeps the result for the retry when the model call fails', async () => {
+    const { agent, turns } = conversational([decide('echo', { text: 'a' }), new Error('overloaded'), decide('echo', { text: 'b' })])
+    await agent.step()
+    await expect(agent.step()).rejects.toThrow('overloaded')
+    await agent.step()
+    expect(turns[2]!.request.result).toEqual({ outcome: 'ok: echo a', isError: false })
+    expect(turns[2]!.conversation).toBe(1)
   })
 })

@@ -1,4 +1,6 @@
 import mineflayer, { type Bot } from 'mineflayer'
+import armorManager from 'mineflayer-armor-manager'
+import { plugin as pvp } from 'mineflayer-pvp'
 import { Movements, pathfinder } from '../lib/mc.ts'
 
 export interface ConnectOptions {
@@ -18,6 +20,9 @@ function describeConnectError(err: Error): string {
 export async function connectBot(options: ConnectOptions): Promise<Bot> {
   const bot = mineflayer.createBot({ ...options, auth: 'offline' })
   bot.loadPlugin(pathfinder)
+  // pvp: melee timed to the attack cooldown, shield against creepers. armorManager: wears the best armor picked up.
+  bot.loadPlugin(pvp)
+  bot.loadPlugin(armorManager)
   await new Promise<void>((resolve, reject) => {
     const cleanup = () => {
       bot.removeListener('spawn', onSpawn)
@@ -41,5 +46,7 @@ export async function connectBot(options: ConnectOptions): Promise<Bot> {
     bot.once('error', onError)
   })
   bot.pathfinder.setMovements(new Movements(bot))
+  // pvp brings its own pathfinder settings; it should move like the rest of the bot.
+  bot.pvp.movements = bot.pathfinder.movements
   return bot
 }

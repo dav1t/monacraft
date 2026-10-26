@@ -1,10 +1,11 @@
 import type { Bot } from 'mineflayer'
 import { biomeAt, describeEntity, isHostile, type Vec3 } from '../lib/mc.ts'
-import type { EntityInfo, WorldState } from './snapshot.ts'
+import type { EntityInfo, Equipped, WorldState } from './snapshot.ts'
 
 const AIR = new Set(['air', 'cave_air', 'void_air'])
 const NEIGHBOURS = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]] as const
-const ARMOR_SLOTS = [5, 6, 7, 8] // head, chest, legs, feet in the player inventory window
+// Slots of the player inventory window that items() leaves out.
+const WORN_SLOTS = { head: 5, torso: 6, legs: 7, feet: 8, off_hand: 45 } as const
 
 export function readWorldState(bot: Bot): WorldState {
   const pos = bot.entity.position
@@ -17,8 +18,7 @@ export function readWorldState(bot: Bot): WorldState {
     biome: biomeAt(bot, pos),
     timeOfDay: bot.time.timeOfDay,
     raining: bot.isRaining,
-    held: bot.heldItem?.name ?? null,
-    armor: ARMOR_SLOTS.flatMap((slot) => bot.inventory.slots[slot]?.name ?? []),
+    equipped: readEquipped(bot),
     cursorBlock: bot.blockAtCursor(5)?.name ?? null,
     inventory: countInventory(bot),
     entities: nearbyEntities(bot, 16),
@@ -26,9 +26,31 @@ export function readWorldState(bot: Bot): WorldState {
   }
 }
 
+/** What is in hand and worn; empty slots are left out. */
+export function readEquipped(bot: Bot): Equipped {
+  const equipped: Equipped = {}
+  if (bot.heldItem) equipped.hand = bot.heldItem.name
+  for (const [slot, index] of Object.entries(WORN_SLOTS)) {
+    const item = bot.inventory.slots[index]
+    if (item) equipped[slot as keyof typeof WORN_SLOTS] = item.name
+  }
+  return equipped
+}
+
+/** Items carried in the inventory and hotbar (the held item too, but not worn armor or the off-hand). */
 export function countInventory(bot: Bot): Record<string, number> {
   const counts: Record<string, number> = {}
   for (const item of bot.inventory.items()) counts[item.name] = (counts[item.name] ?? 0) + item.count
+  return counts
+}
+
+/** Everything the bot has on it: carried plus worn and off-hand. What goals check against. */
+export function countOwned(bot: Bot): Record<string, number> {
+  const counts = countInventory(bot)
+  for (const index of Object.values(WORN_SLOTS)) {
+    const item = bot.inventory.slots[index]
+    if (item) counts[item.name] = (counts[item.name] ?? 0) + item.count
+  }
   return counts
 }
 

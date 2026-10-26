@@ -7,6 +7,9 @@
 
   let revelations = $state<Revelation[]>([])
   let draft = $state('')
+  /** Revelations are never trimmed by the bot, so a long list costs prompt space every step. */
+  const REVELATION_BUDGET = 1500
+  const total = $derived(revelations.reduce((n, r) => n + r.content.length, 0))
 
   $effect(() => {
     void panel.versions.revelations
@@ -32,9 +35,13 @@
     helping hand with its goal. Adding one interrupts the current action so the bot reconsiders right away.
   </p>
   <div class="book-goal">
-    <span>Current goal:</span> <strong>{panel.memory.goal ?? '—'}</strong>
+    <span>Current goal:</span> <strong>{panel.goals.tree?.goal.title ?? '—'}</strong>
     <button class="mc-btn small" onclick={editGoal}>Edit goal</button>
   </div>
+
+  {#if total > REVELATION_BUDGET}
+    <p class="warn-note">Revelations add up to {total} characters (over {REVELATION_BUDGET}). They go into every prompt — consider trimming them.</p>
+  {/if}
 
   {#if revelations.length === 0}
     <p class="hint">No revelations yet. The bot is on its own.</p>

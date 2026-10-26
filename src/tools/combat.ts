@@ -1,7 +1,7 @@
 import type { Bot } from 'mineflayer'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { z } from 'zod'
-import { describeEntity, goals, nearestEntity, type Entity } from '../lib/mc.ts'
+import { describeEntity, nearestEntity, type Entity } from '../lib/mc.ts'
 import { collectNearbyDrops } from './mining.ts'
 import { defineTool, ToolError } from './types.ts'
 
@@ -18,33 +18,28 @@ export async function equipBestWeapon(bot: Bot): Promise<void> {
   }
 }
 
-/** Chase and hit `target` until it dies, escapes or the signal aborts. */
+/** Past this distance the target counts as escaped. */
+const ESCAPE_DISTANCE = 24
+
+/**
+ * Chase and hit `target` until it dies, escapes or the signal aborts. mineflayer-pvp does the fighting: it follows the
+ * target, times hits to the attack cooldown for full damage, and raises a shield against an exploding creeper.
+ */
 export async function fight(bot: Bot, target: Entity, signal: AbortSignal): Promise<string> {
   const label = describeEntity(target)
   await equipBestWeapon(bot)
-  let following = false
+  signal.throwIfAborted()
+  bot.pvp.viewDistance = ESCAPE_DISTANCE
+  void bot.pvp.attack(target)
   try {
-    while (target.isValid) {
-      signal.throwIfAborted()
-      const distance = bot.entity.position.distanceTo(target.position)
-      if (distance > 24) return `${label} got away`
-      if (distance > 3) {
-        // Re-setting the goal resets the path and control states, so only set it when not already following this target.
-        const current = bot.pathfinder.goal
-        if (!(current instanceof goals.GoalFollow && current.entity === target)) {
-          bot.pathfinder.setGoal(new goals.GoalFollow(target, 2), true)
-        }
-        following = true
-      } else {
-        if (following) bot.pathfinder.setGoal(null)
-        following = false
-        await bot.lookAt(target.position.offset(0, target.height * 0.8, 0), true)
-        bot.attack(target)
-      }
-      await sleep(625, undefined, { signal }) // attack cooldown
+    // pvp drops the target when it dies or gets too far away.
+    while (target.isValid && bot.pvp.target === target) {
+      await sleep(250, undefined, { signal })
     }
-    return `defeated ${label}`
+    return target.isValid ? `${label} got away` : `defeated ${label}`
   } finally {
+    // forceStop ends at once; stop() would wait up to 5 s for the path to settle.
+    bot.pvp.forceStop()
     bot.pathfinder.setGoal(null)
   }
 }

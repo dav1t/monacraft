@@ -59,7 +59,7 @@ describe('ToolRegistry', () => {
 
   it('registers every game tool with a valid JSON schema', () => {
     const specs = new ToolRegistry().register(...allTools).specs()
-    expect(specs).toHaveLength(24)
+    expect(specs).toHaveLength(36)
     for (const spec of specs) expect(spec.parameters).toMatchObject({ type: 'object' })
   })
 })

@@ -11,7 +11,7 @@ describe('loadConfig', () => {
       panel: { host: '127.0.0.1', port: 3000 },
     })
     expect(config.providers.openai).toEqual({ provider: 'openai', baseURL: 'https://api.openai.com/v1', model: 'gpt-5-mini', apiKey: '' })
-    expect(config.providers.anthropic).toEqual({ provider: 'anthropic', model: 'claude-opus-5-5', effort: 'medium', apiKey: '' })
+    expect(config.providers.anthropic).toEqual({ provider: 'anthropic', model: 'claude-opus-5-5', effort: 'high', apiKey: '' })
   })
 
   it('reads overrides', () => {

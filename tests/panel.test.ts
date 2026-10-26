@@ -82,9 +82,10 @@ describe('panel server', () => {
 
   it('edits memory, skills and history', async () => {
     const { call, repos } = await start()
-    expect((await call('PUT', '/api/memory/goal', { value: 'get iron' })).status).toBe(200)
-    expect((await call('GET', '/api/memory')).body).toEqual({ goal: 'get iron' })
-    expect((await call('DELETE', '/api/memory/goal')).status).toBe(200)
+    expect((await call('PUT', '/api/memory/base', { value: '1 64 2' })).status).toBe(200)
+    expect((await call('PUT', '/api/memory/base/pin', { pinned: true })).status).toBe(200)
+    expect((await call('GET', '/api/memory')).body).toMatchObject([{ key: 'base', value: '1 64 2', pinned: true }])
+    expect((await call('DELETE', '/api/memory/base')).status).toBe(200)
 
     repos.skills.create({ name: 'chop', description: 'chop', code: 'return 1' })
     expect((await call('PUT', '/api/skills/chop', { description: 'chop trees', code: 'return 2' })).status).toBe(200)
@@ -99,6 +100,35 @@ describe('panel server', () => {
     expect(repos.history.page(10)).toEqual([])
   })
 
+  it('edits the goal tree, lessons, days and templates', async () => {
+    const { call, repos, events } = await start()
+    const set = await call('POST', '/api/goals', { title: 'build a shelter' })
+    expect(set.body).toMatchObject({ tree: { goal: { title: 'build a shelter', status: 'active' }, subgoals: [] } })
+    expect(repos.history.recent(1)[0]?.content).toBe('your creator set your goal: build a shelter')
+    const goalId = repos.goals.active()!.id
+    const sub = (await call('POST', `/api/goals/${goalId}/children`, { title: 'gather dirt' })).body as { id: number }
+    await call('POST', `/api/goals/${goalId}/children`, { title: 'build walls' })
+    expect((await call('PUT', `/api/goals/${sub.id}`, { status: 'done' })).status).toBe(200)
+    const view = (await call('GET', '/api/goals')).body as { tree: { subgoals: { title: string; status: string }[] } }
+    expect(view.tree.subgoals.map((s) => `${s.status}:${s.title}`)).toEqual(['done:gather dirt', 'active:build walls'])
+    expect((await call('POST', '/api/goals/9999/children', { title: 'nope' })).status).toBe(400)
+    expect((await call('DELETE', `/api/goals/${goalId}`)).status).toBe(200)
+    expect(((await call('GET', '/api/goals')).body as { tree: unknown }).tree).toBeNull()
+    expect(events.some((e) => e.type === 'db' && e.data.table === 'goals')).toBe(true)
+
+    const lesson = (await call('POST', '/api/lessons', { content: 'never dig straight down' })).body as { id: number; source: string }
+    expect(lesson.source).toBe('player')
+    expect((await call('PUT', `/api/lessons/${lesson.id}`, { content: 'never dig down' })).status).toBe(200)
+    expect((await call('GET', '/api/lessons')).body).toMatchObject([{ content: 'never dig down' }])
+    expect((await call('DELETE', `/api/lessons/${lesson.id}`)).status).toBe(200)
+
+    repos.templates.save('goal', 'build a shelter', ['a', 'b'])
+    expect((await call('GET', '/api/templates')).body).toMatchObject([{ name: 'build a shelter', titles: ['a', 'b'] }])
+    expect((await call('DELETE', '/api/templates/goal/build%20a%20shelter')).status).toBe(200)
+    expect((await call('GET', '/api/days')).body).toEqual([])
+    expect(await call('POST', '/api/nap', {})).toEqual({ status: 400, body: { error: 'the bot is offline' } })
+  })
+
   it('switches the brain live, saves settings and hides keys', async () => {
     const { call, events, dir } = await start()
     const res = await call('PUT', '/api/settings', { active: 'anthropic', providers: { anthropic: { effort: 'high', apiKey: '' } } })
@@ -106,6 +136,13 @@ describe('panel server', () => {
     expect(events.some((e) => e.type === 'status' && e.data.provider === 'anthropic claude-opus-5-5 (high)')).toBe(true)
     const saved = JSON.parse(readFileSync(join(dir, 'panel.json'), 'utf8'))
     expect(saved).toMatchObject({ active: 'anthropic', providers: { anthropic: { apiKey: 'secret' } } })
+  })
+
+  it('accepts body-less actions like disconnect when sent as JSON, as the panel does', async () => {
+    const { base, call } = await start()
+    // Without a JSON content type the server refuses, so other websites can't send commands.
+    expect((await fetch(`${base}/api/disconnect`, { method: 'POST' })).status).toBe(400)
+    expect(await call('POST', '/api/disconnect', {})).toEqual({ status: 200, body: { ok: true } })
   })
 
   it('rejects non-JSON writes, bad input, and unknown routes', async () => {

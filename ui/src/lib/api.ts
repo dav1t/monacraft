@@ -2,10 +2,12 @@ import { toast } from './ui.svelte.ts'
 
 /** JSON request to the panel server. Failures are shown as a toast and rethrown. */
 export async function api<T = unknown>(method: string, path: string, body?: unknown): Promise<T> {
+  // The server only accepts writes sent as JSON (so other sites can't post to it), even ones without data.
+  const write = method !== 'GET' && method !== 'DELETE'
   const res = await fetch(path, {
     method,
-    headers: body === undefined ? {} : { 'content-type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
+    headers: write ? { 'content-type': 'application/json' } : {},
+    body: write ? JSON.stringify(body ?? {}) : undefined,
   })
   const data = (await res.json().catch(() => ({}))) as { error?: string }
   if (!res.ok) {

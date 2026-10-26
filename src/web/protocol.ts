@@ -1,14 +1,38 @@
 // Types shared by the panel server and the Svelte UI. Keep this file free of runtime imports.
 import type { ConnectOptions } from '../bot/connect.ts'
-import type { HistoryEntry, Revelation, Skill } from '../db/repos.ts'
+import type { GoalTree } from '../agent/goals.ts'
+import type { Day, GoalRow, GoalStatus, HistoryEntry, Lesson, MemoryEntry, PlanTemplate, Revelation, Skill, Structure } from '../db/repos.ts'
 import type { AnthropicSettings, OllamaSettings, OpenAISettings, ProviderId } from '../llm/providers.ts'
 import type { Decision, StreamDelta } from '../llm/types.ts'
 import type { PlayerState, SlotItem } from './state.ts'
 
-export type { Decision, HistoryEntry, PlayerState, ProviderId, Revelation, Skill, SlotItem, StreamDelta }
+export type {
+  Day,
+  Decision,
+  GoalRow,
+  GoalStatus,
+  GoalTree,
+  HistoryEntry,
+  Lesson,
+  MemoryEntry,
+  PlanTemplate,
+  PlayerState,
+  ProviderId,
+  Revelation,
+  Skill,
+  SlotItem,
+  StreamDelta,
+  Structure,
+}
+
+/** The goal tree and the last few finished goals, for the panel. */
+export interface GoalsView {
+  tree: GoalTree | null
+  past: GoalRow[]
+}
 
 export type ConnectionStatus = 'offline' | 'connecting' | 'online'
-export type BrainStatus = 'idle' | 'deciding' | 'acting' | 'paused'
+export type BrainStatus = 'idle' | 'deciding' | 'acting' | 'paused' | 'sleeping'
 
 export interface Status {
   connection: ConnectionStatus
@@ -17,6 +41,12 @@ export interface Status {
   server: string
   username: string
   provider: string
+  /** Tokens the model read for the last decision (0 before the first one). */
+  promptTokens: number
+  /** True when the provider did not report the count and it was estimated. */
+  promptTokensEstimated: boolean
+  /** The model's context window in tokens, when known (Ollama's num_ctx). */
+  contextTokens: number | null
 }
 
 export interface LogEntry {
@@ -32,6 +62,7 @@ export interface MindStep {
   thinking: string
   text: string
   tool: string
+  promptTokens?: number
   decision?: Decision
   outcome?: string
   invalid?: string
@@ -48,7 +79,7 @@ export interface PublicSettings {
   }
 }
 
-export type DbTable = 'memory' | 'skills' | 'history' | 'revelations'
+export type DbTable = 'memory' | 'skills' | 'history' | 'revelations' | 'goals' | 'days' | 'lessons' | 'templates' | 'structures'
 
 export interface Snapshot {
   status: Status

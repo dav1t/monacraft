@@ -118,3 +118,19 @@ describe('OllamaProvider streaming', () => {
     expect(deltas).toEqual(['thinking:need ', 'thinking:wood', 'text:Chopping.', 'tool:mine {"block_type":"oak_log"}'])
   })
 })
+
+describe('OllamaProvider token counts', () => {
+  it('reports the prompt tokens Ollama counted and its context window', async () => {
+    const requests: ChatRequest[] = []
+    const client = {
+      chat: async (r: ChatRequest) => {
+        requests.push(r)
+        const message = { role: 'assistant', content: '', tool_calls: [{ function: { name: 'say', arguments: { message: 'hi' } } }] }
+        return { message, prompt_eval_count: 1831 }
+      },
+    } as unknown as Pick<Ollama, 'chat'>
+    const provider = new OllamaProvider({ model: 'qwen3:8b', mode: 'tools', numCtx: 8192, client })
+    expect(provider.contextWindow).toBe(8192)
+    expect(await provider.decide(request)).toMatchObject({ tool: 'say', promptTokens: 1831 })
+  })
+})

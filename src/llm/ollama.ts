@@ -19,11 +19,15 @@ export interface OllamaOptions {
   client?: Pick<Ollama, 'chat'>
 }
 
+/** How long Ollama keeps the model in memory after a request. */
+const KEEP_ALIVE = '30m'
+
 const JSON_INSTRUCTIONS =
   'Reply with a JSON object: {"thought": "<one short sentence>", "tool": "<tool name>", "args": {<arguments>}}.'
 
 export class OllamaProvider implements LLMProvider {
   readonly name: string
+  readonly contextWindow: number | undefined
   readonly #options: OllamaOptions
   readonly #client: Pick<Ollama, 'chat'>
 
@@ -31,6 +35,7 @@ export class OllamaProvider implements LLMProvider {
     this.#options = options
     this.#client = options.client ?? new Ollama({ host: options.host })
     this.name = `ollama ${options.model} (${options.mode})`
+    this.contextWindow = options.numCtx
   }
 
   async decide(request: DecideRequest): Promise<Decision> {
@@ -47,17 +52,23 @@ export class OllamaProvider implements LLMProvider {
   async #decide({ system, user, tools, onStream }: DecideRequest): Promise<Decision> {
     const { model, mode, think, temperature = 0.4, numCtx } = this.#options
     const names = tools.map((t) => t.name)
-    const base = { model, options: { temperature, ...(numCtx !== undefined && { num_ctx: numCtx }) }, ...(think !== undefined && { think }) }
+    const base = {
+      model,
+      // Ollama unloads an idle model after 5 minutes; reloading it stalls the first step after a nap or a pause.
+      keep_alive: KEEP_ALIVE,
+      options: { temperature, ...(numCtx !== undefined && { num_ctx: numCtx }) },
+      ...(think !== undefined && { think }),
+    }
 
     if (mode === 'tools') {
-      const message = await this.#chat(
+      const { message, promptTokens } = await this.#chat(
         { ...base, messages: [{ role: 'system', content: system }, { role: 'user', content: user }], tools: tools.map(toOllamaTool) },
         onStream,
       )
-      return parseToolReply(message, names)
+      return { ...parseToolReply(message, names), ...(promptTokens && { promptTokens }) }
     }
 
-    const message = await this.#chat(
+    const { message, promptTokens } = await this.#chat(
       {
         ...base,
         messages: [
@@ -75,14 +86,20 @@ ${JSON_INSTRUCTIONS}` },
     )
     const decision = parseDecisionText(message.content, names)
     if (!decision) throw new LLMFormatError(`reply is not a valid decision: "${truncate(message.content, 160)}"`)
-    return decision
+    return { ...decision, ...(promptTokens && { promptTokens }) }
   }
 
   /** One chat request; streamed (and reported piece by piece) only when someone listens. */
-  async #chat(request: Omit<ChatRequest, 'stream'>, onStream: DecideRequest['onStream']): Promise<Message> {
-    if (!onStream) return (await this.#client.chat({ ...request, stream: false })).message
+  async #chat(request: Omit<ChatRequest, 'stream'>, onStream: DecideRequest['onStream']): Promise<{ message: Message; promptTokens?: number }> {
+    if (!onStream) {
+      const response = await this.#client.chat({ ...request, stream: false })
+      return { message: response.message, promptTokens: response.prompt_eval_count }
+    }
     const message: Message = { role: 'assistant', content: '', thinking: '', tool_calls: [] }
+    let promptTokens: number | undefined
     for await (const part of await this.#client.chat({ ...request, stream: true })) {
+      // The final part carries the counts (the whole prompt, even when Ollama reused its cache).
+      if (part.prompt_eval_count) promptTokens = part.prompt_eval_count
       const { content, thinking, tool_calls } = part.message
       if (thinking) {
         message.thinking += thinking
@@ -97,7 +114,7 @@ ${JSON_INSTRUCTIONS}` },
         onStream({ kind: 'tool', text: `${call.function.name} ${JSON.stringify(call.function.arguments)}` })
       }
     }
-    return message
+    return { message, promptTokens }
   }
 }
 

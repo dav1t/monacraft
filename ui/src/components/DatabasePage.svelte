@@ -2,8 +2,10 @@
   import HistoryTable from './HistoryTable.svelte'
   import MemoryTable from './MemoryTable.svelte'
   import SkillsList from './SkillsList.svelte'
+  import StructuresTable from './StructuresTable.svelte'
+  import TemplatesTable from './TemplatesTable.svelte'
 
-  const TABLES = { memory: 'Memory', skills: 'Skills', history: 'History' } as const
+  const TABLES = { memory: 'Memory', skills: 'Skills', templates: 'Plan templates', structures: 'Structures', history: 'History' } as const
   let table = $state<keyof typeof TABLES>('memory')
 </script>
 
@@ -17,6 +19,10 @@
   <MemoryTable />
 {:else if table === 'skills'}
   <SkillsList />
+{:else if table === 'templates'}
+  <TemplatesTable />
+{:else if table === 'structures'}
+  <StructuresTable />
 {:else}
   <HistoryTable />
 {/if}

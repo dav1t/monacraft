@@ -1,12 +1,15 @@
 import type { AgentEvent } from '../agent/agent.ts'
+import { GoalKeeper } from '../agent/goals.ts'
 import type { ConnectOptions } from '../bot/connect.ts'
 import type { Repos } from '../db/repos.ts'
 import { errorMessage } from '../lib/text.ts'
 import { createProvider, SwitchableProvider } from '../llm/providers.ts'
 import { FatalLLMError } from '../llm/types.ts'
+import { botWorld } from '../planning/world.ts'
 import { startSession, type Session } from '../session.ts'
+import type { SleepEvent } from '../sleep.ts'
 import { activeLLM, applyPatch, publicSettings, saveSettings, type PanelSettings, type SettingsPatch } from './settings.ts'
-import type { BrainStatus, ConnectionStatus, DbTable, LogEntry, MindStep, PanelEvent, Snapshot, Status } from './protocol.ts'
+import type { BrainStatus, ConnectionStatus, DbTable, GoalsView, LogEntry, MindStep, PanelEvent, Snapshot, Status } from './protocol.ts'
 import { readPlayerState } from './state.ts'
 
 const MAX_LOGS = 1000
@@ -37,6 +40,9 @@ export class Controller {
   #steps: MindStep[] = []
   #nextId = 1
   #stateTimer: NodeJS.Timeout | null = null
+  #promptTokens = 0
+  #promptTokensEstimated = false
+  #sleeping = false
 
   constructor({ repos, settings, settingsPath, print = () => {} }: ControllerOptions) {
     this.repos = repos
@@ -71,6 +77,9 @@ export class Controller {
       server: `${host}:${port}`,
       username: this.#session?.bot.username ?? username,
       provider: this.#provider.name,
+      promptTokens: this.#promptTokens,
+      promptTokensEstimated: this.#promptTokensEstimated,
+      contextTokens: this.#provider.contextWindow ?? null,
     }
   }
 
@@ -97,6 +106,9 @@ export class Controller {
         // A decision in flight when the session ends must not touch the (offline) status.
         onAgentEvent: (event) => {
           if (this.#session === session) this.#onAgentEvent(event)
+        },
+        onSleepEvent: (event) => {
+          if (this.#session === session) this.#onSleepEvent(event)
         },
         onEnd: (reason) => this.#onEnded(session, `disconnected: ${reason}`),
       })
@@ -141,6 +153,32 @@ export class Controller {
     return revelation
   }
 
+  /** The goal tree service; it can plan only while the bot is online. */
+  goals(): GoalKeeper {
+    return new GoalKeeper(this.repos, this.#session ? botWorld(this.#session.bot) : null)
+  }
+
+  goalsView(): GoalsView {
+    return { tree: this.goals().tree(), past: this.repos.goals.past(5) }
+  }
+
+  /** A goal set by the player: recorded in the history, and the agent reconsiders right away. */
+  setGoal(title: string): GoalsView {
+    const result = this.goals().setGoal(title)
+    this.repos.history.add('event', `your creator set your goal: ${title}`)
+    this.log(`🎯 ${result}`)
+    this.#session?.agent.interrupt('your creator set a new goal')
+    this.changed('goals')
+    this.changed('history')
+    return this.goalsView()
+  }
+
+  /** Consolidate now, without waiting for night. */
+  async nap(): Promise<void> {
+    if (!this.#session) throw new Error('the bot is offline')
+    await this.#session.sleep.run('nap')
+  }
+
   changed(table: DbTable): void {
     this.#emit({ type: 'db', data: { table } })
   }
@@ -183,6 +221,7 @@ export class Controller {
     this.#stateTimer = null
     this.#error = reason
     this.#brain = 'idle'
+    this.#sleeping = false
     this.#setStatus('offline')
   }
 
@@ -202,6 +241,12 @@ export class Controller {
         step[event.delta.kind === 'thinking' ? 'thinking' : event.delta.kind === 'text' ? 'text' : 'tool'] += event.delta.text
         this.#emit({ type: 'delta', data: { id: step.id, ...event.delta } })
         return
+      case 'usage':
+        this.#promptTokens = event.promptTokens
+        this.#promptTokensEstimated = event.estimated
+        if (step) step.promptTokens = event.promptTokens
+        this.#emitStatus()
+        return
       case 'decision':
         if (!step) return
         step.decision = event.decision
@@ -215,7 +260,10 @@ export class Controller {
         this.#emit({ type: 'step', data: step })
         // Tools may have written memory or skills; history always grows.
         this.changed('history')
-        if (['remember', 'forget', 'set_goal'].includes(event.tool)) this.changed('memory')
+        // Goal bookkeeping runs after every action.
+        this.changed('goals')
+        if (['remember', 'forget'].includes(event.tool)) this.changed('memory')
+        if (event.tool === 'build') this.changed('structures')
         if (['create_skill', 'revise_skill', 'run_skill'].includes(event.tool)) this.changed('skills')
         return
       case 'invalid':
@@ -225,6 +273,19 @@ export class Controller {
         this.#emit({ type: 'step', data: step })
         return
     }
+  }
+
+  #onSleepEvent(event: SleepEvent): void {
+    if (event.type === 'start') {
+      this.#sleeping = true
+      this.#brain = 'sleeping'
+      this.#emitStatus()
+      return
+    }
+    this.#sleeping = false
+    this.#brain = 'idle'
+    this.#emitStatus()
+    for (const table of ['days', 'lessons', 'memory', 'goals', 'history', 'templates'] as const) this.changed(table)
   }
 
   #emitState(): void {
@@ -238,6 +299,8 @@ export class Controller {
 
   #setBrain(brain: BrainStatus): void {
     if (this.#brain === 'paused' && brain !== 'deciding') return
+    // An action that was running when sleep began still reports back; the bot stays asleep.
+    if (this.#sleeping) return
     this.#brain = brain
     this.#emitStatus()
   }

@@ -5,6 +5,9 @@ export interface EntityInfo {
   hostile: boolean
 }
 
+/** Item names in hand and worn; empty slots are left out. */
+export type Equipped = Partial<Record<'hand' | 'off_hand' | 'head' | 'torso' | 'legs' | 'feet', string>>
+
 /** Raw sensor readings, decoupled from mineflayer so formatting is testable. */
 export interface WorldState {
   health: number
@@ -15,8 +18,7 @@ export interface WorldState {
   biome: string
   timeOfDay: number
   raining: boolean
-  held: string | null
-  armor: string[]
+  equipped: Equipped
   cursorBlock: string | null
   inventory: Record<string, number>
   entities: EntityInfo[]
@@ -32,8 +34,8 @@ export interface Snapshot {
   biome: string
   time: string
   weather: string
-  held: string | null
-  armor: string[]
+  /** In hand and worn. The held item also counts in inventory; worn ones do not. */
+  equipped: Equipped
   looking_at: string | null
   inventory: Record<string, number>
   nearby_entities: string[]
@@ -84,8 +86,7 @@ export function formatSnapshot(s: WorldState): Snapshot {
     biome: s.biome,
     time: timeLabel(s.timeOfDay),
     weather: s.raining ? 'rain' : 'clear',
-    held: s.held,
-    armor: s.armor,
+    equipped: s.equipped,
     looking_at: s.cursorBlock,
     inventory: s.inventory,
     nearby_entities: summarizeEntities(s.entities),

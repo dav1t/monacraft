@@ -1,7 +1,9 @@
 // Live panel state, fed by the server's event stream.
 import type {
   DbTable,
+  GoalsView,
   LogEntry,
+  MemoryEntry,
   MindStep,
   PanelEvents,
   PlayerState,
@@ -19,11 +21,22 @@ class Panel {
   logs = $state<LogEntry[]>([])
   steps = $state<MindStep[]>([])
   player = $state<PlayerState | null>(null)
-  /** The memory table, kept here because the goal shows on several tabs. */
-  memory = $state<Record<string, string>>({})
+  memory = $state<MemoryEntry[]>([])
+  /** The goal tree, kept here because it shows on several tabs. */
+  goals = $state<GoalsView>({ tree: null, past: [] })
   streamLost = $state(false)
   /** Bumped when a table changes; views that show the table reload on change. */
-  versions = $state<Record<DbTable, number>>({ memory: 0, skills: 0, history: 0, revelations: 0 })
+  versions = $state<Record<DbTable, number>>({
+    memory: 0,
+    skills: 0,
+    history: 0,
+    revelations: 0,
+    goals: 0,
+    days: 0,
+    lessons: 0,
+    templates: 0,
+    structures: 0,
+  })
 
   connect(): void {
     const events = new EventSource('/api/events')
@@ -41,6 +54,7 @@ class Panel {
       // Something may have changed while the stream was down.
       for (const table of Object.keys(this.versions) as DbTable[]) this.versions[table]++
       this.loadMemory()
+      this.loadGoals()
     })
     on('status', (status) => {
       this.status = status
@@ -66,11 +80,16 @@ class Panel {
     on('db', ({ table }) => {
       this.versions[table]++
       if (table === 'memory') this.loadMemory()
+      if (table === 'goals') this.loadGoals()
     })
   }
 
   loadMemory(): void {
-    api<Record<string, string>>('GET', '/api/memory').then((memory) => (this.memory = memory), () => {})
+    api<MemoryEntry[]>('GET', '/api/memory').then((memory) => (this.memory = memory), () => {})
+  }
+
+  loadGoals(): void {
+    api<GoalsView>('GET', '/api/goals').then((goals) => (this.goals = goals), () => {})
   }
 }
 

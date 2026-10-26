@@ -5,6 +5,9 @@
 
   let { item, selected = false, hint }: { item: SlotItem | null; selected?: boolean; hint?: string | undefined } = $props()
 
+  // Item ids without a texture fall back to the colored square.
+  let missing = $state<string | null>(null)
+
   function hover(event: MouseEvent): void {
     if (!item) return
     Object.assign(tooltip, { item, x: event.clientX, y: event.clientY })
@@ -22,7 +25,11 @@
   onmouseleave={() => (tooltip.item = null)}
 >
   {#if item}
-    <div class="item-icon" style:background={itemColor(item.name)}>{abbreviate(item.name)}</div>
+    {#if missing === item.name}
+      <div class="item-icon" style:background={itemColor(item.name)}>{abbreviate(item.name)}</div>
+    {:else}
+      <img class="item-img" src={`/api/icons/${item.name}.png`} alt="" draggable="false" onerror={() => (missing = item?.name ?? null)} />
+    {/if}
     {#if item.count > 1}<span class="item-count">{item.count}</span>{/if}
   {/if}
 </div>

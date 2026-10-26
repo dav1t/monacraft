@@ -1,6 +1,6 @@
 import vm from 'node:vm'
 import { setTimeout as sleep } from 'node:timers/promises'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { Mutex } from '../src/lib/mutex.ts'
 import { errorMessage, truncate } from '../src/lib/text.ts'
 
@@ -41,5 +41,57 @@ describe('isHostile', () => {
     expect(isHostile({ type: 'mob', name: 'phantom' } as never)).toBe(true)
     expect(isHostile({ type: 'mob', name: 'cow' } as never)).toBe(false)
     expect(isHostile({ type: 'player', name: 'Steve' } as never)).toBe(false)
+  })
+})
+
+describe('moveTo', () => {
+  /** A bot whose pathfinder never finishes on its own: goto settles only when the goal is cleared. */
+  async function stuckBot(move: (tick: number) => [number, number, number] = () => [0, 64, 0]) {
+    const { Vec3 } = await import('../src/lib/mc.ts')
+    let reject: (err: Error) => void = () => {}
+    let tick = 0
+    const bot = {
+      entity: { position: new Vec3(0, 64, 0) },
+      pathfinder: {
+        isMining: () => false,
+        isBuilding: () => false,
+        goto: () => new Promise<void>((_, r) => (reject = r)),
+        setGoal: (goal: unknown) => goal === null && reject(new Error('GoalChanged')),
+      },
+    }
+    const timer = setInterval(() => (bot.entity.position = new Vec3(...move(++tick))), 1_000)
+    return { bot: bot as never, stop: () => clearInterval(timer) }
+  }
+
+  it('gives up with an UnreachableError when the bot stops making progress', async () => {
+    vi.useFakeTimers()
+    try {
+      const { moveTo, UnreachableError, goals } = await import('../src/lib/mc.ts')
+      const { bot, stop } = await stuckBot()
+      const moving = moveTo(bot, new goals.GoalNearXZ(80, 0, 3), new AbortController().signal)
+      const result = expect(moving).rejects.toThrow(/stuck at 0 64 0/)
+      await vi.advanceTimersByTimeAsync(15_000)
+      await result
+      await expect(moving).rejects.toBeInstanceOf(UnreachableError)
+      stop()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps going while the bot is moving, however long it takes', async () => {
+    vi.useFakeTimers()
+    try {
+      const { moveTo, goals } = await import('../src/lib/mc.ts')
+      const { bot, stop } = await stuckBot((t) => [t, 64, 0])
+      let settled = false
+      const moving = moveTo(bot, new goals.GoalNearXZ(500, 0, 3), new AbortController().signal).finally(() => (settled = true))
+      moving.catch(() => {})
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(settled).toBe(false)
+      stop()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

@@ -1,4 +1,13 @@
 import type { DatabaseSync } from 'node:sqlite'
+import { ContainerRepo } from './containers.ts'
+import { DayRepo, LessonRepo } from './days.ts'
+import { GoalRepo, TemplateRepo } from './goals.ts'
+import { StructureRepo } from './structures.ts'
+
+export type { StoredContainer } from './containers.ts'
+export type { Day, DayKind, Lesson, LessonSource } from './days.ts'
+export type { Structure } from './structures.ts'
+export type { GoalKind, GoalRow, GoalStatus, PlanTemplate, TemplateKind } from './goals.ts'
 
 export interface Skill {
   name: string
@@ -55,6 +64,13 @@ export class SkillRepo {
   }
 }
 
+export interface MemoryEntry {
+  key: string
+  value: string
+  pinned: boolean
+  updated_at: string
+}
+
 export class MemoryRepo {
   readonly #db: DatabaseSync
 
@@ -78,6 +94,23 @@ export class MemoryRepo {
     return Number(this.#db.prepare('DELETE FROM memory WHERE key = ?').run(key).changes) > 0
   }
 
+  /** Pinned facts first, then the most recently updated. */
+  list(): MemoryEntry[] {
+    const rows = this.#db
+      .prepare('SELECT key, value, pinned, updated_at FROM memory ORDER BY pinned DESC, updated_at DESC, key')
+      .all() as unknown as (Omit<MemoryEntry, 'pinned'> & { pinned: number })[]
+    return rows.map((r) => ({ ...r, pinned: r.pinned === 1 }))
+  }
+
+  /** Pinned facts are never deleted or changed by sleep. */
+  setPinned(key: string, pinned: boolean): boolean {
+    return Number(this.#db.prepare('UPDATE memory SET pinned = ? WHERE key = ?').run(pinned ? 1 : 0, key).changes) > 0
+  }
+
+  isPinned(key: string): boolean {
+    return (this.#db.prepare('SELECT pinned FROM memory WHERE key = ?').get(key) as { pinned: number } | undefined)?.pinned === 1
+  }
+
   all(): Record<string, string> {
     const rows = this.#db.prepare('SELECT key, value FROM memory ORDER BY key').all() as unknown as { key: string; value: string }[]
     return Object.fromEntries(rows.map((r) => [r.key, r.value]))
@@ -95,11 +128,35 @@ export class HistoryRepo {
     this.#db.prepare('INSERT INTO history (kind, content) VALUES (?, ?)').run(kind, content)
   }
 
-  /** The last `limit` entries, oldest first. */
-  recent(limit: number): HistoryEntry[] {
+  /** The last `limit` entries (only those after `afterId`), oldest first. */
+  recent(limit: number, afterId = 0): HistoryEntry[] {
     return this.#db
-      .prepare('SELECT * FROM (SELECT id, kind, content, created_at FROM history ORDER BY id DESC LIMIT ?) ORDER BY id')
-      .all(limit) as unknown as HistoryEntry[]
+      .prepare('SELECT * FROM (SELECT id, kind, content, created_at FROM history WHERE id > ? ORDER BY id DESC LIMIT ?) ORDER BY id')
+      .all(afterId, limit) as unknown as HistoryEntry[]
+  }
+
+  countSince(afterId: number): number {
+    return (this.#db.prepare('SELECT COUNT(*) AS n FROM history WHERE id > ?').get(afterId) as { n: number }).n
+  }
+
+  lastId(): number {
+    return (this.#db.prepare('SELECT COALESCE(MAX(id), 0) AS id FROM history').get() as { id: number }).id
+  }
+
+  /**
+   * Entries containing any of `terms` (case-insensitive), newest first. Candidates for recall; the caller ranks them.
+   */
+  search(terms: string[], limit: number): HistoryEntry[] {
+    if (terms.length === 0) return []
+    const where = terms.map(() => 'content LIKE ?').join(' OR ')
+    return this.#db
+      .prepare(`SELECT id, kind, content, created_at FROM history WHERE ${where} ORDER BY id DESC LIMIT ?`)
+      .all(...terms.map((t) => `%${t}%`), limit) as unknown as HistoryEntry[]
+  }
+
+  /** When the first entry after `afterId` was written (the start of a day), if any. */
+  firstTimeSince(afterId: number): string | null {
+    return (this.#db.prepare('SELECT MIN(created_at) AS t FROM history WHERE id > ?').get(afterId) as { t: string | null }).t
   }
 
   /** Up to `limit` entries older than `beforeId` (all if omitted), newest first. */
@@ -156,8 +213,38 @@ export interface Repos {
   memory: MemoryRepo
   history: HistoryRepo
   revelations: RevelationRepo
+  goals: GoalRepo
+  templates: TemplateRepo
+  days: DayRepo
+  lessons: LessonRepo
+  structures: StructureRepo
+  containers: ContainerRepo
+  /** Runs `fn` in one transaction; it is rolled back if `fn` throws. */
+  transaction<T>(fn: () => T): T
 }
 
 export function createRepos(db: DatabaseSync): Repos {
-  return { skills: new SkillRepo(db), memory: new MemoryRepo(db), history: new HistoryRepo(db), revelations: new RevelationRepo(db) }
+  return {
+    skills: new SkillRepo(db),
+    memory: new MemoryRepo(db),
+    history: new HistoryRepo(db),
+    revelations: new RevelationRepo(db),
+    goals: new GoalRepo(db),
+    templates: new TemplateRepo(db),
+    days: new DayRepo(db),
+    lessons: new LessonRepo(db),
+    structures: new StructureRepo(db),
+    containers: new ContainerRepo(db),
+    transaction<T>(fn: () => T): T {
+      db.exec('BEGIN')
+      try {
+        const result = fn()
+        db.exec('COMMIT')
+        return result
+      } catch (err) {
+        db.exec('ROLLBACK')
+        throw err
+      }
+    },
+  }
 }

@@ -21,19 +21,40 @@ export class UnreachableError extends ToolError {
   override name = 'UnreachableError'
 }
 
+/** moveTo gives up when the bot moves less than STALL_DISTANCE blocks in STALL_MS. */
+const STALL_DISTANCE = 1
+const STALL_MS = 10_000
+
 /** Pathfind to a goal; aborting the signal stops the bot. */
 export async function moveTo(bot: Bot, goal: Goal, signal: AbortSignal): Promise<void> {
   signal.throwIfAborted()
   // setGoal(null) ends goto() immediately (GoalChanged). pathfinder.stop() only sets a flag that is honoured at the next path node and lingers if idle.
   const onAbort = () => bot.pathfinder.setGoal(null)
   signal.addEventListener('abort', onAbort, { once: true })
+  // The pathfinder never gives up when the server keeps rejecting its moves: it replans the same path every few
+  // seconds while the bot stands still. Give up once the bot has not moved for a while (digging or pillaring counts as progress).
+  let anchor = bot.entity.position.clone()
+  let lastProgress = Date.now()
+  let stuckAt: string | null = null
+  const watchdog = setInterval(() => {
+    const here = bot.entity.position
+    if (here.distanceTo(anchor) >= STALL_DISTANCE || bot.pathfinder.isMining() || bot.pathfinder.isBuilding()) {
+      anchor = here.clone()
+      lastProgress = Date.now()
+    } else if (Date.now() - lastProgress >= STALL_MS) {
+      stuckAt = formatPos(here)
+      bot.pathfinder.setGoal(null)
+    }
+  }, 1_000)
   try {
     await bot.pathfinder.goto(goal)
   } catch (err) {
     if (signal.aborted) throw signal.reason
     bot.pathfinder.setGoal(null) // don't keep drifting toward the goal after reporting failure
+    if (stuckAt) throw new UnreachableError(`stuck at ${stuckAt}: something blocks the way — try another route or direction`)
     throw new UnreachableError(`could not reach the target: ${err instanceof Error ? err.message : String(err)}`)
   } finally {
+    clearInterval(watchdog)
     signal.removeEventListener('abort', onAbort)
   }
   if (signal.aborted) throw signal.reason

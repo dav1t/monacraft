@@ -20,13 +20,3 @@ export const forget = defineTool({
     return `forgot ${key}`
   },
 })
-
-export const setGoal = defineTool({
-  name: 'set_goal',
-  description: 'Set your current long-term goal.',
-  schema: z.object({ goal: z.string().min(3) }),
-  run: async ({ goal }, { repos }) => {
-    repos.memory.set('goal', goal)
-    return `goal set: ${goal}`
-  },
-})

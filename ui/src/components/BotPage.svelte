@@ -1,5 +1,5 @@
 <script lang="ts">
-  import GoalBar from './GoalBar.svelte'
+  import GoalTree from './GoalTree.svelte'
   import MindFeed from './MindFeed.svelte'
   import PlayerPanel from './PlayerPanel.svelte'
   import RevealInput from './RevealInput.svelte'
@@ -10,7 +10,7 @@
 <div class="bot-grid">
   <PlayerPanel {onSettings} />
   <div class="mind-col">
-    <GoalBar />
+    <GoalTree />
     <MindFeed />
     <RevealInput />
   </div>
