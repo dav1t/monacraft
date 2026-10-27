@@ -5,6 +5,7 @@
   import JournalPage from './components/JournalPage.svelte'
   import LogsPage from './components/LogsPage.svelte'
   import ModelsPage from './components/ModelsPage.svelte'
+  import PovPage from './components/PovPage.svelte'
   import RevelationsPage from './components/RevelationsPage.svelte'
   import SettingsPage from './components/SettingsPage.svelte'
   import Toasts from './components/Toasts.svelte'
@@ -12,7 +13,7 @@
   import TopBar from './components/TopBar.svelte'
   import { panel } from './lib/panel.svelte.ts'
 
-  const TABS = { bot: 'Bot', revelations: 'Revelations', journal: 'Journal', models: 'Models', logs: 'Logs', database: 'Database', settings: 'Settings' } as const
+  const TABS = { bot: 'Bot', pov: 'POV', revelations: 'Revelations', journal: 'Journal', models: 'Models', logs: 'Logs', database: 'Database', settings: 'Settings' } as const
   type Tab = keyof typeof TABS
 
   function savedTab(): Tab {
@@ -47,6 +48,8 @@
 <main>
   {#if tab === 'bot'}
     <BotPage onSettings={() => show('settings')} />
+  {:else if tab === 'pov'}
+    <PovPage />
   {:else if tab === 'revelations'}
     <RevelationsPage />
   {:else if tab === 'journal'}

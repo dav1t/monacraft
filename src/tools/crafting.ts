@@ -14,15 +14,51 @@ function maxCrafts(bot: Bot, recipe: Recipe): number {
   return max
 }
 
+interface Ingredient {
+  name: string
+  count: number
+}
+
+const FAMILIES = ['planks', 'log', 'wool', 'carpet', 'slab']
+
+function familyOf(name: string): string {
+  return FAMILIES.find((f) => name.endsWith(`_${f}`)) ?? name
+}
+
+/**
+ * One line per distinct recipe. Recipes that differ only in the variant of an ingredient (oak vs cherry planks)
+ * collapse into one "any planks" option, so the bot isn't told it needs one specific wood.
+ */
+export function describeRecipes(recipes: Ingredient[][]): string[] {
+  const groups = new Map<string, { counts: number[]; variants: Set<string>[] }>()
+  for (const ingredients of recipes) {
+    const sorted = [...ingredients].sort((a, b) => familyOf(a.name).localeCompare(familyOf(b.name)))
+    const key = sorted.map((i) => `${i.count} ${familyOf(i.name)}`).join(' + ')
+    let group = groups.get(key)
+    if (!group) {
+      group = { counts: sorted.map((i) => i.count), variants: sorted.map(() => new Set()) }
+      groups.set(key, group)
+    }
+    sorted.forEach((i, n) => group.variants[n]!.add(i.name))
+  }
+  return [...groups.values()].map(({ counts, variants }) =>
+    variants
+      .map((names, n) => {
+        const [first] = names
+        return names.size > 1 ? `${counts[n]} of any ${familyOf(first!)}` : `${counts[n]} ${first}`
+      })
+      .join(' + '),
+  )
+}
+
 function explainMissing(bot: Bot, itemId: number, item: string, haveTable: boolean): string {
   const recipes = bot.recipesAll(itemId, null, true)
   if (recipes.length === 0) return `${item} has no crafting recipe — smelt it, mine it or find it instead`
-  const options = recipes.slice(0, 3).map((r) =>
-    r.delta
-      .filter((d) => d.count < 0)
-      .map((d) => `${-d.count} ${bot.registry.items[d.id]?.name ?? d.id}`)
-      .join(' + '),
-  )
+  const options = describeRecipes(
+    recipes.map((r) =>
+      r.delta.filter((d) => d.count < 0).map((d) => ({ name: bot.registry.items[d.id]?.name ?? String(d.id), count: -d.count })),
+    ),
+  ).slice(0, 3)
   const needsTable = recipes.every((r) => r.requiresTable) && !haveTable
   // When the table is the only thing missing, say exactly that; listing ingredients the bot already has misleads it.
   const hasIngredients = recipes.some((r) => maxCrafts(bot, r) >= 1)
@@ -33,7 +69,7 @@ function explainMissing(bot: Bot, itemId: number, item: string, haveTable: boole
     }`
   }
   const tableNote = needsTable ? '; needs a crafting_table within 32 blocks' : ''
-  return `cannot craft ${item} yet. One craft needs ${[...new Set(options)].join(' OR ')}${tableNote}`
+  return `cannot craft ${item} yet. One craft needs ${options.join(' OR ')}${tableNote}`
 }
 
 const WEARABLE = /_(helmet|chestplate|leggings|boots)$|^shield$/

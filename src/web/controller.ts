@@ -1,3 +1,4 @@
+import type { Bot } from 'mineflayer'
 import type { AgentEvent } from '../agent/agent.ts'
 import { GoalKeeper } from '../agent/goals.ts'
 import type { ConnectOptions } from '../bot/connect.ts'
@@ -82,6 +83,11 @@ export class Controller {
       steps: this.#steps,
       state: this.#session ? readPlayerState(this.#session.bot) : null,
     }
+  }
+
+  /** The connected bot, for the POV viewer. */
+  currentBot(): Bot | null {
+    return this.#connection === 'online' ? (this.#session?.bot ?? null) : null
   }
 
   status(): Status {

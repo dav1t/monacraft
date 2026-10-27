@@ -5,12 +5,14 @@ import { z } from 'zod'
 import { errorMessage } from '../lib/text.ts'
 import type { Controller } from './controller.ts'
 import { itemIcon } from './icons.ts'
+import { attachPov, POV_DIR } from './pov.ts'
 import { minecraftSchema, settingsPatchSchema } from './settings.ts'
 
 const TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
   '.ico': 'image/x-icon',
@@ -232,8 +234,19 @@ function hostAllowed(req: IncomingMessage, bindHost: string): boolean {
   return ['127.0.0.1', 'localhost', '[::1]'].includes(host)
 }
 
+/** WebSockets skip CORS, so a page on another site could open one; only the panel's own pages may. */
+function sameOrigin(req: IncomingMessage): boolean {
+  const origin = req.headers.origin
+  if (!origin) return true
+  try {
+    return new URL(origin).host === req.headers.host
+  } catch {
+    return false
+  }
+}
+
 /** Serves the built UI; unknown paths get index.html. Returns false when there is nothing to serve. */
-async function serveStatic(dir: string, pathname: string, res: ServerResponse): Promise<boolean> {
+async function serveStatic(dir: string, pathname: string, res: ServerResponse, cacheAll = false): Promise<boolean> {
   const wanted = normalize(join(dir, decodeURIComponent(pathname)))
   const file = wanted.startsWith(normalize(dir) + sep) && extname(wanted) ? wanted : join(dir, 'index.html')
   let body: Buffer
@@ -244,8 +257,8 @@ async function serveStatic(dir: string, pathname: string, res: ServerResponse): 
     res.writeHead(404).end()
     return true
   }
-  // Vite puts a content hash in asset names, so those can be cached for good.
-  const immutable = file.includes(`${sep}assets${sep}`)
+  // Vite puts a content hash in asset names, so those can be cached for good (as can everything when `cacheAll`).
+  const immutable = (cacheAll && !file.endsWith('index.html')) || file.includes(`${sep}assets${sep}`)
   res.writeHead(200, { 'content-type': TYPES[extname(file)] ?? 'application/octet-stream', 'cache-control': immutable ? 'public, max-age=31536000, immutable' : 'no-cache' })
   res.end(body)
   return true
@@ -261,10 +274,17 @@ export interface PanelServerOptions {
 
 export function createPanelServer(controller: Controller, { bindHost, staticDir, ui }: PanelServerOptions): Server {
   const table = routes(controller)
-  return createServer(async (req, res) => {
+  const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://panel')
     if (!hostAllowed(req, bindHost)) return sendJson(res, 403, { error: 'forbidden host' })
     try {
+      // The bot's view (prismarine-viewer's page); its socket.io path is handled by attachPov.
+      if (url.pathname === '/pov') return res.writeHead(301, { location: '/pov/' }).end()
+      if (url.pathname.startsWith('/pov/') && req.method === 'GET') {
+        // The viewer's files only change with the pinned package version; worker.js alone is ~60 MB.
+        if (await serveStatic(POV_DIR, url.pathname.slice('/pov'.length), res, true)) return
+        return sendJson(res, 404, { error: 'not found' })
+      }
       if (!url.pathname.startsWith('/api/')) {
         if (ui) return ui(req, res, () => sendJson(res, 404, { error: 'not found' }))
         if (req.method === 'GET' && staticDir && (await serveStatic(staticDir, url.pathname, res))) return
@@ -295,4 +315,6 @@ export function createPanelServer(controller: Controller, { bindHost, staticDir,
       sendJson(res, err instanceof BadRequest ? 400 : 500, { error: errorMessage(err) })
     }
   })
+  attachPov(server, () => controller.currentBot(), (req) => hostAllowed(req, bindHost) && sameOrigin(req))
+  return server
 }
