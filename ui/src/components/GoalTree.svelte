@@ -14,7 +14,7 @@
   // The sub-goal list folds away under the goal, remembered per browser.
   function savedOpen(): boolean {
     try {
-      return localStorage.getItem('mindfart.goalTree') !== 'closed'
+      return localStorage.getItem('monacraft.goalTree') !== 'closed'
     } catch {
       return true
     }
@@ -23,7 +23,7 @@
   function toggleExpanded(): void {
     expanded = !expanded
     try {
-      localStorage.setItem('mindfart.goalTree', expanded ? 'open' : 'closed')
+      localStorage.setItem('monacraft.goalTree', expanded ? 'open' : 'closed')
     } catch {}
   }
 

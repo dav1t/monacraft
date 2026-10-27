@@ -16,7 +16,7 @@
 
   function savedTab(): Tab {
     try {
-      const tab = localStorage.getItem('mindfart.tab')
+      const tab = localStorage.getItem('monacraft.tab')
       if (tab && tab in TABS) return tab as Tab
     } catch {}
     return 'bot'
@@ -27,7 +27,7 @@
   function show(next: Tab): void {
     tab = next
     try {
-      localStorage.setItem('mindfart.tab', next)
+      localStorage.setItem('monacraft.tab', next)
     } catch {}
   }
 </script>

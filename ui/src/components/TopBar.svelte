@@ -30,7 +30,7 @@
 </script>
 
 <header class="topbar">
-  <div class="logo">MINDFART<span class="splash">Revelations!</span></div>
+  <div class="logo">MONACRAFT<span class="splash">Revelations!</span></div>
   {#if status}
     <div class="status">
       <span class="badge {status.connection}">{status.connection}</span>

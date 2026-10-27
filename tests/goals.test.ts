@@ -191,7 +191,7 @@ describe('GoalKeeper', () => {
 
 describe('database migration', () => {
   it('moves memory.goal into the goal table and adds the pinned column', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'mindfart-')), 'old.db')
+    const path = join(mkdtempSync(join(tmpdir(), 'monacraft-')), 'old.db')
     const old = new DatabaseSync(path)
     old.exec(`CREATE TABLE memory (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT (datetime('now')));
               INSERT INTO memory (key, value) VALUES ('goal', 'get iron'), ('base', '0 64 0');`)

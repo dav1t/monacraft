@@ -31,7 +31,7 @@ describe('panel settings', () => {
   })
 
   it('loads saved settings over defaults and ignores broken files', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'mindfart-'))
+    const dir = mkdtempSync(join(tmpdir(), 'monacraft-'))
     const path = join(dir, 'panel.json')
     expect(loadSettings(path, defaults())).toEqual(defaults())
     writeFileSync(path, JSON.stringify({ minecraft: { host: 'mc.local', port: 25570, username: 'Bob', version: '1.21.11' } }))
@@ -46,7 +46,7 @@ describe('panel server', () => {
   afterEach(() => close())
 
   async function start() {
-    const dir = mkdtempSync(join(tmpdir(), 'mindfart-'))
+    const dir = mkdtempSync(join(tmpdir(), 'monacraft-'))
     const repos = createRepos(openDatabase(':memory:'))
     const controller = new Controller({ repos, settings: defaults(), settingsPath: join(dir, 'panel.json') })
     const events: PanelEvent[] = []
@@ -156,7 +156,7 @@ describe('panel server', () => {
   })
 
   it('serves the built UI with a fallback to index.html and no escapes', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'mindfart-ui-'))
+    const dir = mkdtempSync(join(tmpdir(), 'monacraft-ui-'))
     writeFileSync(join(dir, 'index.html'), '<p>panel</p>')
     const controller = new Controller({ repos: createRepos(openDatabase(':memory:')), settings: defaults(), settingsPath: join(dir, 'panel.json') })
     const server = createPanelServer(controller, { bindHost: '127.0.0.1', staticDir: dir })
