@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from 'node:timers/promises'
 import { z } from 'zod'
 import type { GoalRow } from './db/goals.ts'
 import type { Day, DayKind, Repos } from './db/repos.ts'
@@ -18,6 +19,9 @@ export const NAP_AFTER_ENTRIES = 150
 /** …or when the prompt grows past this many characters (and the day has some history to fold away). */
 export const PROMPT_BUDGET_CHARS = 14_000
 const NAP_MIN_ENTRIES = 30
+/** Waits before the 2nd and 3rd reflection attempt after a failed request (rate limits pass; unusable replies retry at once). */
+const RETRY_DELAYS_MS = [10_000, 30_000]
+
 /** A night with fewer history entries than this is not worth a reflection. */
 const MIN_DAY_ENTRIES = 5
 
@@ -209,21 +213,23 @@ export interface ConsolidateOptions {
   /** The bot's name, for the reflection prompt. */
   name: string
   log: (line: string) => void
+  /** Replaceable in tests. */
+  wait?: (ms: number) => Promise<void>
 }
 
 /**
- * Ends the day: one reflection call (retried once) writes the journal, lessons, memory and goal changes, and a new day
- * starts with an empty prompt history. If reflection fails, the day still ends.
+ * Ends the day: one reflection call (up to 3 attempts) writes the journal, lessons, memory and goal changes, and a new
+ * day starts with an empty prompt history. If reflection fails, the day still ends.
  */
-export async function consolidate({ repos, provider, name, log }: ConsolidateOptions, kind: DayKind): Promise<Day> {
+export async function consolidate({ repos, provider, name, log, wait = sleep }: ConsolidateOptions, kind: DayKind): Promise<Day> {
   const after = repos.days.todayAfter()
   const until = repos.history.lastId()
   const startedAt = repos.history.firstTimeSince(after) ?? new Date().toISOString().slice(0, 19).replace('T', ' ')
   const spec = writeJournalSpec()
   let result: JournalInput | null = null
-  for (let attempt = 1; attempt <= 2 && !result; attempt++) {
+  for (let attempt = 1; attempt <= RETRY_DELAYS_MS.length + 1 && !result; attempt++) {
     try {
-      const decision = await provider.decide({ system: reflectionPrompt(name), user: reflectionInput(repos), tools: [spec] })
+      const decision = await provider.decide({ system: reflectionPrompt(name), user: reflectionInput(repos), tools: [spec], purpose: 'reflection' })
       if (decision.tool !== 'write_journal') throw new LLMFormatError(`called ${decision.tool} instead of write_journal`)
       const parsed = parseJournal(decision.args)
       if ('error' in parsed) throw new LLMFormatError(`invalid journal: ${parsed.error}`)
@@ -231,6 +237,8 @@ export async function consolidate({ repos, provider, name, log }: ConsolidateOpt
       result = parsed.input
     } catch (err) {
       log(`⚠ reflection attempt ${attempt} failed: ${errorMessage(err)}`)
+      const delay = RETRY_DELAYS_MS[attempt - 1]
+      if (delay !== undefined && !(err instanceof LLMFormatError)) await wait(delay)
     }
   }
 

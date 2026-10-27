@@ -32,6 +32,7 @@ const goalEdit = z.object({
   status: z.enum(['todo', 'active', 'done', 'failed', 'dropped', 'paused']).optional(),
 })
 const pin = z.object({ pinned: z.boolean() })
+const providerId = z.enum(['ollama', 'openai', 'anthropic', 'openrouter'])
 
 /** Runs a goal-tree change; its errors (no active goal, offline…) are the client's to fix. */
 async function clientError<T>(fn: () => T | Promise<T>): Promise<T> {
@@ -65,6 +66,11 @@ function routes(controller: Controller): [string, RegExp, Handler][] {
       return { ok: true }
     }],
     ['GET', /^\/api\/settings$/, () => controller.snapshot().settings],
+    ['GET', /^\/api\/stats$/, () => controller.stats()],
+    ['GET', /^\/api\/models$/, ({ url }) => {
+      const provider = url.searchParams.get('provider')
+      return controller.models(url.searchParams.get('refresh') === '1', provider === null ? undefined : parse(providerId, provider))
+    }],
     ['PUT', /^\/api\/settings$/, ({ body }) => {
       controller.updateSettings(parse(settingsPatchSchema, body))
       return controller.snapshot().settings

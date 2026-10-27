@@ -1,15 +1,16 @@
 import type { AgentEvent } from '../agent/agent.ts'
 import { GoalKeeper } from '../agent/goals.ts'
 import type { ConnectOptions } from '../bot/connect.ts'
-import type { Repos } from '../db/repos.ts'
+import type { ModelStats, Repos } from '../db/repos.ts'
 import { errorMessage } from '../lib/text.ts'
-import { createProvider, SwitchableProvider } from '../llm/providers.ts'
-import { FatalLLMError } from '../llm/types.ts'
+import { listModels, type ModelInfo } from '../llm/models.ts'
+import { createProvider, labelOf, SwitchableProvider, type CallRecord, type LLMSettings, type ProviderId } from '../llm/providers.ts'
+import { FatalLLMError, type LLMProvider } from '../llm/types.ts'
 import { botWorld } from '../planning/world.ts'
-import { startSession, type Session } from '../session.ts'
+import { startSession, type Session, type SessionOptions } from '../session.ts'
 import type { SleepEvent } from '../sleep.ts'
 import { activeLLM, applyPatch, publicSettings, saveSettings, type PanelSettings, type SettingsPatch } from './settings.ts'
-import type { BrainStatus, ConnectionStatus, DbTable, GoalsView, LogEntry, MindStep, PanelEvent, Snapshot, Status } from './protocol.ts'
+import type { BrainStatus, ConnectionStatus, DbTable, GoalsView, LogEntry, MindStep, ModelList, PanelEvent, Snapshot, Status } from './protocol.ts'
 import { readPlayerState } from './state.ts'
 
 const MAX_LOGS = 1000
@@ -22,6 +23,9 @@ export interface ControllerOptions {
   settingsPath: string
   /** Also print log lines here (the terminal). */
   print?: (line: string) => void
+  /** Replaceable in tests. */
+  startSession?: (options: SessionOptions) => Promise<Session>
+  createProvider?: (settings: LLMSettings) => LLMProvider
 }
 
 /** Owns the bot session for the web panel and turns everything that happens into events for connected browsers. */
@@ -30,6 +34,8 @@ export class Controller {
   readonly #settingsPath: string
   readonly #print: (line: string) => void
   readonly #provider: SwitchableProvider
+  readonly #startSession: (options: SessionOptions) => Promise<Session>
+  readonly #createProvider: (settings: LLMSettings) => LLMProvider
   readonly #listeners = new Set<(event: PanelEvent) => void>()
   #settings: PanelSettings
   #session: Session | null = null
@@ -43,13 +49,23 @@ export class Controller {
   #promptTokens = 0
   #promptTokensEstimated = false
   #sleeping = false
+  /** The current or last bot join; model calls are recorded under it. */
+  #sessionId: number | null = null
+  #sessionCost: number | null = null
+  /** The last decision's usage row, marked when its tool call returns an error. */
+  #lastDecisionRow: number | null = null
+  /** Each provider's last model list, with the settings (minus the model) it was loaded with. */
+  readonly #models = new Map<ProviderId, { key: string; list: Promise<ModelInfo[]> }>()
 
-  constructor({ repos, settings, settingsPath, print = () => {} }: ControllerOptions) {
+  constructor({ repos, settings, settingsPath, print = () => {}, ...overrides }: ControllerOptions) {
     this.repos = repos
     this.#settings = settings
     this.#settingsPath = settingsPath
     this.#print = print
-    this.#provider = new SwitchableProvider(createProvider(activeLLM(settings)))
+    this.#startSession = overrides.startSession ?? startSession
+    this.#createProvider = overrides.createProvider ?? createProvider
+    const llm = activeLLM(settings)
+    this.#provider = new SwitchableProvider(this.#createProvider(llm), labelOf(llm), (record) => this.#onCall(record))
   }
 
   subscribe(listener: (event: PanelEvent) => void): () => void {
@@ -77,6 +93,8 @@ export class Controller {
       server: `${host}:${port}`,
       username: this.#session?.bot.username ?? username,
       provider: this.#provider.name,
+      model: this.#provider.label.model,
+      sessionCost: this.#sessionCost,
       promptTokens: this.#promptTokens,
       promptTokensEstimated: this.#promptTokensEstimated,
       contextTokens: this.#provider.contextWindow ?? null,
@@ -95,10 +113,13 @@ export class Controller {
     if (this.#connection !== 'offline') throw new Error('already connected — disconnect first')
     this.#updateSettings({ minecraft })
     this.#error = null
+    this.#sessionId = Date.now()
+    this.#sessionCost = null
+    this.#lastDecisionRow = null
     this.#setStatus('connecting')
     let session: Session
     try {
-      session = await startSession({
+      session = await this.#startSession({
         minecraft,
         provider: this.#provider,
         repos: this.repos,
@@ -137,10 +158,35 @@ export class Controller {
     const before = JSON.stringify(activeLLM(this.#settings))
     this.#updateSettings(patch)
     if (JSON.stringify(activeLLM(this.#settings)) !== before) {
-      this.#provider.set(createProvider(activeLLM(this.#settings)))
+      const llm = activeLLM(this.#settings)
+      this.#provider.set(this.#createProvider(llm), labelOf(llm))
       this.log(`🧠 brain switched to ${this.#provider.name}`)
       this.#emitStatus()
     }
+  }
+
+  /** A provider's models (the active one's by default), loaded once per provider setup unless `refresh` is set. */
+  async models(refresh = false, provider: ProviderId = this.#settings.active): Promise<ModelList> {
+    const llm = this.#settings.providers[provider]
+    // Picking another model must not reload the list.
+    const key = JSON.stringify({ ...llm, model: '' })
+    let entry = this.#models.get(provider)
+    if (refresh || entry?.key !== key) {
+      entry = { key, list: listModels(llm) }
+      this.#models.set(provider, entry)
+    }
+    try {
+      return { provider, current: llm.model, models: await entry.list }
+    } catch (err) {
+      // A failed list is tried again next time.
+      if (this.#models.get(provider) === entry) this.#models.delete(provider)
+      return { provider, current: llm.model, models: null, error: errorMessage(err) }
+    }
+  }
+
+  /** Per-model stats for the current (or last) session and for all time. */
+  stats(): { session: ModelStats[]; allTime: ModelStats[] } {
+    return { session: this.#sessionId === null ? [] : this.repos.usage.stats(this.#sessionId), allTime: this.repos.usage.stats() }
   }
 
   addRevelation(content: string) {
@@ -225,6 +271,37 @@ export class Controller {
     this.#setStatus('offline')
   }
 
+  /** A model call finished; an in-flight call that ends after a disconnect still belongs to that session. */
+  #onCall(record: CallRecord): void {
+    if (this.#sessionId === null) return
+    let id: number
+    try {
+      id = this.repos.usage.record(this.#sessionId, record)
+    } catch (err) {
+      // A later tool error must not land on an older decision.
+      if (record.kind === 'decision') this.#lastDecisionRow = null
+      this.log(`⚠ could not record usage: ${errorMessage(err)}`)
+      return
+    }
+    const { cost, inputTokens, outputTokens } = record.usage
+    if (cost !== undefined) this.#sessionCost = (this.#sessionCost ?? 0) + cost
+    const step = this.#steps.at(-1)
+    if (record.kind === 'decision') {
+      this.#lastDecisionRow = id
+      if (step && step.model === undefined) {
+        Object.assign(step, {
+          model: record.model,
+          ...(cost !== undefined && { cost }),
+          ...(inputTokens !== undefined && { inputTokens }),
+          ...(outputTokens !== undefined && { outputTokens }),
+        })
+        this.#emit({ type: 'step', data: step })
+      }
+    }
+    this.#emitStatus()
+    this.changed('llm_calls')
+  }
+
   #onAgentEvent(event: AgentEvent): void {
     const step = this.#steps.at(-1)
     switch (event.type) {
@@ -254,6 +331,13 @@ export class Controller {
         this.#emit({ type: 'step', data: step })
         return
       case 'outcome':
+        if (event.outcome.startsWith('error:') && this.#lastDecisionRow !== null) {
+          try {
+            this.repos.usage.markToolError(this.#lastDecisionRow)
+          } catch (err) {
+            this.log(`⚠ could not record usage: ${errorMessage(err)}`)
+          }
+        }
         if (!step) return
         step.outcome = event.outcome
         this.#setBrain('idle')
@@ -269,6 +353,12 @@ export class Controller {
       case 'invalid':
         if (!step) return
         step.invalid = event.error
+        this.#setBrain('idle')
+        this.#emit({ type: 'step', data: step })
+        return
+      case 'interrupted':
+        if (!step) return
+        step.outcome = `interrupted: ${event.reason}`
         this.#setBrain('idle')
         this.#emit({ type: 'step', data: step })
         return

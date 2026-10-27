@@ -2,13 +2,11 @@ import type { Bot } from 'mineflayer'
 import { setTimeout as sleep } from 'node:timers/promises'
 import type { Agent } from './agent/agent.ts'
 import type { Repos } from './db/repos.ts'
-import { goals, isHostile, nearestEntity, type Entity } from './lib/mc.ts'
+import { goals, isHostile, nearestEntity, NEUTRAL_MOBS, type Entity } from './lib/mc.ts'
 import { errorMessage } from './lib/text.ts'
 import { fight } from './tools/combat.ts'
 import { eatItem, pickFood } from './tools/inventory.ts'
 
-/** Mobs tagged hostile that only fight back when provoked. */
-const NEUTRAL = new Set(['enderman', 'zombified_piglin', 'piglin', 'creaking'])
 const HUNGRY_BELOW = 14
 const THREAT_RANGE = 4
 const REFLEX_TIME_LIMIT_MS = 20_000
@@ -29,7 +27,7 @@ function chooseReflex(bot: Bot, ignoredUntil: Map<number, number>): Reflex | nul
     bot,
     (e) =>
       isHostile(e) &&
-      !NEUTRAL.has(e.name ?? '') &&
+      !NEUTRAL_MOBS.has(e.name ?? '') &&
       Math.abs(e.position.y - bot.entity.position.y) <= MAX_THREAT_DY &&
       (ignoredUntil.get(e.id) ?? 0) <= now,
     THREAT_RANGE,

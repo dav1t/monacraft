@@ -36,6 +36,7 @@ class Panel {
     lessons: 0,
     templates: 0,
     structures: 0,
+    llm_calls: 0,
   })
 
   connect(): void {

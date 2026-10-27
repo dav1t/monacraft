@@ -26,7 +26,7 @@ export const minecraftSchema = z.object({
 /** Partial update from the panel. An empty or missing apiKey keeps the stored key; null clears it. */
 export const settingsPatchSchema = z.object({
   minecraft: minecraftSchema.optional(),
-  active: z.enum(['ollama', 'openai', 'anthropic']).optional(),
+  active: z.enum(['ollama', 'openai', 'anthropic', 'openrouter']).optional(),
   providers: z
     .object({
       ollama: z
@@ -44,6 +44,7 @@ export const settingsPatchSchema = z.object({
         .object({ model: text, effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']), apiKey: z.string().nullable() })
         .partial()
         .optional(),
+      openrouter: z.object({ model: text, apiKey: z.string().nullable() }).partial().optional(),
     })
     .optional(),
 })
@@ -72,7 +73,7 @@ export function saveSettings(path: string, settings: PanelSettings): void {
 }
 
 export function applyPatch(settings: PanelSettings, patch: SettingsPatch): PanelSettings {
-  const { ollama, openai, anthropic } = patch.providers ?? {}
+  const { ollama, openai, anthropic, openrouter } = patch.providers ?? {}
   return {
     minecraft: patch.minecraft ?? settings.minecraft,
     active: patch.active ?? settings.active,
@@ -80,6 +81,7 @@ export function applyPatch(settings: PanelSettings, patch: SettingsPatch): Panel
       ollama: { ...settings.providers.ollama, ...ollama },
       openai: { ...settings.providers.openai, ...openai, apiKey: nextKey(settings.providers.openai.apiKey, openai?.apiKey) },
       anthropic: { ...settings.providers.anthropic, ...anthropic, apiKey: nextKey(settings.providers.anthropic.apiKey, anthropic?.apiKey) },
+      openrouter: { ...settings.providers.openrouter, ...openrouter, apiKey: nextKey(settings.providers.openrouter.apiKey, openrouter?.apiKey) },
     },
   }
 }
@@ -95,13 +97,14 @@ export function activeLLM(settings: PanelSettings): LLMSettings {
 
 /** Settings as sent to the browser: API keys are never sent back, only whether one is stored. */
 export function publicSettings(settings: PanelSettings): PublicSettings {
-  const { openai, anthropic } = settings.providers
+  const { openai, anthropic, openrouter } = settings.providers
   return {
     ...settings,
     providers: {
       ...settings.providers,
       openai: { ...openai, apiKey: '', hasApiKey: openai.apiKey !== '' },
       anthropic: { ...anthropic, apiKey: '', hasApiKey: anthropic.apiKey !== '' },
+      openrouter: { ...openrouter, apiKey: '', hasApiKey: openrouter.apiKey !== '' },
     },
   }
 }

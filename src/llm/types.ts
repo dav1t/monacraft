@@ -1,11 +1,20 @@
 import type { ToolSpec } from '../tools/types.ts'
 
+/** What one model call used, as far as the provider reports it. */
+export interface Usage {
+  inputTokens?: number
+  outputTokens?: number
+  /** In USD; only providers that report it (OpenRouter). */
+  cost?: number
+}
+
 export interface Decision {
   thought: string
   tool: string
   args: Record<string, unknown>
   /** Tokens the model read for this decision (system prompt, tools and prompt), when the provider reports it. */
   promptTokens?: number
+  usage?: Usage
 }
 
 /** A piece of the reply as the model writes it: hidden reasoning, visible text, or tool-call arguments. */
@@ -20,6 +29,10 @@ export interface DecideRequest {
   tools: ToolSpec[]
   /** When set, the provider streams and reports the reply as it arrives. */
   onStream?: (delta: StreamDelta) => void
+  /** What the call is for, for usage stats; a step decision unless said otherwise. */
+  purpose?: 'decision' | 'reflection'
+  /** Cancels the call: the agent was interrupted while thinking. */
+  signal?: AbortSignal
 }
 
 /** What the last decision's tool call returned. */
@@ -34,6 +47,8 @@ export interface ConverseRequest {
   /** The result of the previous decision's tool call. */
   result?: ToolOutcome
   onStream?: (delta: StreamDelta) => void
+  /** Cancels the turn; a cancelled turn is not kept, so the conversation continues as if it was never sent. */
+  signal?: AbortSignal
 }
 
 /**
@@ -61,6 +76,20 @@ export interface LLMProvider {
 /** The model answered, but not with a usable tool call. */
 export class LLMFormatError extends Error {
   override name = 'LLMFormatError'
+
+  /** What the unusable reply cost, when it arrived. */
+  constructor(
+    message: string,
+    readonly usage?: Usage,
+  ) {
+    super(message)
+  }
+}
+
+/** The usage worth reporting: undefined when the provider counted nothing. */
+export function usageOf(usage: Usage): Usage | undefined {
+  const entries = Object.entries(usage).filter(([, value]) => value !== undefined)
+  return entries.length > 0 ? (Object.fromEntries(entries) as Usage) : undefined
 }
 
 /** The provider can never work with this setup (e.g. the model lacks tool support); retrying is pointless. */

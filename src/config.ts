@@ -1,13 +1,13 @@
 import type { AnthropicEffort } from './llm/anthropic.ts'
 import type { OllamaMode, ThinkSetting } from './llm/ollama.ts'
-import type { AnthropicSettings, LLMSettings, OllamaSettings, OpenAISettings } from './llm/providers.ts'
+import type { AnthropicSettings, LLMSettings, OllamaSettings, OpenAISettings, OpenRouterSettings } from './llm/providers.ts'
 
 export interface Config {
   minecraft: { host: string; port: number; username: string; version: string }
   /** The provider picked by LLM_PROVIDER. */
   llm: LLMSettings
   /** Settings for every provider, so the panel can switch between them. */
-  providers: { ollama: OllamaSettings; openai: OpenAISettings; anthropic: AnthropicSettings }
+  providers: { ollama: OllamaSettings; openai: OpenAISettings; anthropic: AnthropicSettings; openrouter: OpenRouterSettings }
   dbPath: string
   panel: { host: string; port: number }
 }
@@ -16,8 +16,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   // Empty values count as unset, so `MC_HOST=` falls back to the default.
   const get = (name: string): string | undefined => env[name] || undefined
   const provider = get('LLM_PROVIDER') ?? 'ollama'
-  if (provider !== 'ollama' && provider !== 'openai' && provider !== 'anthropic') {
-    throw new Error(`LLM_PROVIDER must be "ollama", "openai" or "anthropic" (got "${provider}")`)
+  if (provider !== 'ollama' && provider !== 'openai' && provider !== 'anthropic' && provider !== 'openrouter') {
+    throw new Error(`LLM_PROVIDER must be "ollama", "openai", "anthropic" or "openrouter" (got "${provider}")`)
   }
   const providers: Config['providers'] = {
     ollama: {
@@ -39,6 +39,11 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       model: get('ANTHROPIC_MODEL') ?? 'claude-opus-5-5',
       effort: parseEffort(get('ANTHROPIC_EFFORT')),
       apiKey: get('ANTHROPIC_API_KEY') ?? '',
+    },
+    openrouter: {
+      provider: 'openrouter',
+      model: get('OPENROUTER_MODEL') ?? 'openai/gpt-5-mini',
+      apiKey: get('OPENROUTER_API_KEY') ?? '',
     },
   }
   return {

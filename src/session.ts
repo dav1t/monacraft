@@ -4,7 +4,10 @@ import { GoalKeeper } from './agent/goals.ts'
 import { buildSystemPrompt } from './agent/prompt.ts'
 import { connectBot, type ConnectOptions } from './bot/connect.ts'
 import type { Repos } from './db/repos.ts'
-import { formatPos, isHostile, nearestEntity } from './lib/mc.ts'
+import { watchDamage } from './damage.ts'
+import { watchDeaths } from './death.ts'
+import { Eyes, startEyes } from './eyes.ts'
+import { formatPos } from './lib/mc.ts'
 import { errorMessage } from './lib/text.ts'
 import type { LLMProvider } from './llm/types.ts'
 import { startReflexes } from './reflexes.ts'
@@ -42,12 +45,13 @@ export async function startSession({ minecraft, provider, repos, log, onAgentEve
   await bot.waitForChunksToLoad()
   repos.history.add('event', `connected at ${formatPos(bot.entity.position)}`)
 
+  const eyes = new Eyes()
   const agent = new Agent({
     provider,
     registry: new ToolRegistry().register(...allTools),
     repos,
     systemPrompt: buildSystemPrompt(bot.username),
-    observe: () => formatSnapshot(readWorldState(bot)),
+    observe: () => formatSnapshot(readWorldState(bot, eyes)),
     context: { bot, repos, log },
     log,
     goals: new GoalKeeper(repos, botWorld(bot)),
@@ -66,22 +70,16 @@ export async function startSession({ minecraft, provider, repos, log, onAgentEve
   }
   wearArmor()
   bot.on('spawn', wearArmor)
-  bot.on('death', () => {
-    repos.history.add('event', `you died at ${formatPos(bot.entity.position)} and respawned; your items dropped there`)
-    agent.interrupt('you died')
-  })
-  let lastUnseenDamage = 0
-  bot.on('entityHurt', (entity) => {
-    if (entity !== bot.entity || Date.now() - lastUnseenDamage < 10_000) return
-    if (nearestEntity(bot, isHostile, 4)) return
-    lastUnseenDamage = Date.now()
-    repos.history.add('event', `you took damage from something out of reach (health ${Math.round(bot.health)})`)
-  })
+  // Stop the current action at once; watchDeaths records the cause a moment later and reflects on it.
+  bot.on('death', () => agent.interrupt('you died'))
+  const stopDeaths = watchDeaths({ bot, repos, sleep, log })
+  const stopDamage = watchDamage(bot, agent, repos, log)
   bot.on('kicked', (reason) => log(`kicked: ${JSON.stringify(reason)}`))
   bot.on('error', (err) => log(`bot error: ${err.message}`))
 
   const stopReflexes = startReflexes(bot, agent, repos, log)
   const stopSleep = sleep.start()
+  const stopEyes = startEyes(bot, eyes, agent, repos, log)
   let stopped = false
   bot.on('end', (reason) => {
     if (stopped) return
@@ -89,6 +87,9 @@ export async function startSession({ minecraft, provider, repos, log, onAgentEve
     log(`disconnected (${reason})`)
     stopReflexes()
     stopSleep()
+    stopDeaths()
+    stopDamage()
+    stopEyes()
     agent.stop()
     onEnd?.(reason)
   })
@@ -102,6 +103,9 @@ export async function startSession({ minecraft, provider, repos, log, onAgentEve
       stopped = true
       stopReflexes()
       stopSleep()
+      stopDeaths()
+      stopDamage()
+      stopEyes()
       agent.stop()
       bot.quit()
     },

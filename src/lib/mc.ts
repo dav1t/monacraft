@@ -94,6 +94,9 @@ export function formatPos(pos: { x: number; y: number; z: number }): string {
 }
 
 /** Mobs mineflayer tags 'mob' (not 'hostile') on 1.21.x that still attack. */
+/** Mobs tagged hostile that only fight back when provoked. */
+export const NEUTRAL_MOBS = new Set(['enderman', 'zombified_piglin', 'piglin', 'creaking'])
+
 const HOSTILE_MOBS = new Set(['slime', 'magma_cube', 'phantom', 'ghast', 'shulker', 'hoglin'])
 
 export function isHostile(entity: Pick<Entity, 'type' | 'name'>): boolean {

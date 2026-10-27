@@ -1,10 +1,10 @@
 import type Anthropic from '@anthropic-ai/sdk'
-import type OpenAI from 'openai'
+import OpenAI from 'openai'
 import { describe, expect, it } from 'vitest'
 import { AnthropicProvider } from '../src/llm/anthropic.ts'
 import { OpenAIProvider } from '../src/llm/openai.ts'
-import { SwitchableProvider } from '../src/llm/providers.ts'
-import { LLMFormatError, type LLMProvider } from '../src/llm/types.ts'
+import { createProvider, labelOf, OPENROUTER_URL, SwitchableProvider, type CallRecord } from '../src/llm/providers.ts'
+import { FatalLLMError, LLMFormatError, type Conversation, type Decision, type LLMProvider } from '../src/llm/types.ts'
 import type { ToolSpec } from '../src/tools/types.ts'
 
 const tools: ToolSpec[] = [
@@ -52,6 +52,55 @@ describe('OpenAIProvider', () => {
     await expect(new OpenAIProvider({ baseURL: 'http://x', model: 'm', client: unknown.client }).decide(request)).rejects.toThrow(/unknown tool/)
   })
 
+  it('reports usage and the cost the server sent', async () => {
+    const { client } = fakeOpenAI([
+      { choices: [{ delta: { tool_calls: [{ index: 0, function: { name: 'say', arguments: '{"message":"hi"}' } }] } }] },
+      { choices: [], usage: { prompt_tokens: 100, completion_tokens: 20, cost: 0.0012 } },
+    ])
+    const decision = await new OpenAIProvider({ baseURL: 'http://x', model: 'm', client }).decide(request)
+    expect(decision.usage).toEqual({ inputTokens: 100, outputTokens: 20, cost: 0.0012 })
+    expect(decision.promptTokens).toBe(100)
+  })
+
+  it('keeps the usage of an unusable reply on the format error', async () => {
+    const { client } = fakeOpenAI([
+      { choices: [{ delta: { content: 'just talking' } }] },
+      { choices: [], usage: { prompt_tokens: 100, completion_tokens: 3 } },
+    ])
+    const error = await new OpenAIProvider({ baseURL: 'http://x', model: 'm', client }).decide(request).catch((err: unknown) => err)
+    expect(error).toBeInstanceOf(LLMFormatError)
+    expect((error as LLMFormatError).usage).toEqual({ inputTokens: 100, outputTokens: 3 })
+  })
+
+  it('talks to OpenRouter with usage accounting on', async () => {
+    const { client, requests } = fakeOpenAI([{ choices: [{ delta: { content: '{"thought":"hi","tool":"say","args":{"message":"yo"}}' } }] }])
+    const provider = new OpenAIProvider({ baseURL: OPENROUTER_URL, model: 'a/b', apiKey: 'k', label: 'openrouter', extraBody: { usage: { include: true } }, client })
+    expect(provider.name).toBe('openrouter a/b')
+    await provider.decide(request)
+    expect(requests[0]).toMatchObject({ model: 'a/b', usage: { include: true }, max_tokens: 16_000 })
+    expect(createProvider({ provider: 'openrouter', model: 'a/b', apiKey: 'k' }).name).toBe('openrouter a/b')
+  })
+
+  it('caps the reply under the name OpenAI itself expects', async () => {
+    const { client, requests } = fakeOpenAI([{ choices: [{ delta: { content: '{"tool":"say","args":{}}' } }] }])
+    await new OpenAIProvider({ baseURL: 'https://api.openai.com/v1', model: 'gpt-5-mini', client }).decide(request)
+    expect(requests[0]).toMatchObject({ max_completion_tokens: 16_000 })
+    expect(requests[0]).not.toHaveProperty('max_tokens')
+  })
+
+  it('treats an OpenRouter bad request as fatal, but not a prompt that is too long', async () => {
+    const failing = (message: string) =>
+      ({
+        chat: { completions: { create: async () => Promise.reject(new OpenAI.BadRequestError(400, { message }, message, new Headers())) } },
+      }) as unknown as Pick<OpenAI, 'chat'>
+    const openrouter = (message: string) =>
+      new OpenAIProvider({ baseURL: OPENROUTER_URL, model: 'x/typo', label: 'openrouter', client: failing(message) }).decide(request)
+    await expect(openrouter('x/typo is not a valid model ID')).rejects.toThrow(FatalLLMError)
+    await expect(openrouter('This endpoint maximum context length is 8192 tokens')).rejects.not.toThrow(FatalLLMError)
+    const local = new OpenAIProvider({ baseURL: 'http://x/v1', model: 'm', client: failing('bad') }).decide(request)
+    await expect(local).rejects.not.toThrow(FatalLLMError)
+  })
+
   it('falls back to a decision written as text', async () => {
     const { client } = fakeOpenAI([{ choices: [{ delta: { content: '{"thought":"hi","tool":"say","args":{"message":"yo"}}' } }] }])
     expect(await new OpenAIProvider({ baseURL: 'http://x', model: 'm', client }).decide(request)).toEqual({ thought: 'hi', tool: 'say', args: { message: 'yo' } })
@@ -91,12 +140,19 @@ describe('AnthropicProvider', () => {
           { type: 'thinking', thinking: 'a player spoke\nmore' },
           { type: 'tool_use', id: 't1', name: 'say', input: { message: 'hi' } },
         ],
+        usage: { input_tokens: 10, cache_read_input_tokens: 90, cache_creation_input_tokens: 0, output_tokens: 7 },
       },
     )
     const deltas: string[] = []
     const provider = new AnthropicProvider({ model: 'claude-opus-5-5', effort: 'medium', client })
     const decision = await provider.decide({ ...request, onStream: (d) => deltas.push(`${d.kind}:${d.text}`) })
-    expect(decision).toEqual({ thought: 'a player spoke', tool: 'say', args: { message: 'hi' } })
+    expect(decision).toEqual({
+      thought: 'a player spoke',
+      tool: 'say',
+      args: { message: 'hi' },
+      promptTokens: 100,
+      usage: { inputTokens: 100, outputTokens: 7 },
+    })
     expect(deltas).toEqual(['thinking:a player spoke', 'tool:{"message":"hi"}'])
     expect(requests[0]).toMatchObject({
       model: 'claude-opus-5-5',
@@ -210,12 +266,59 @@ describe('SwitchableProvider', () => {
   const named = (name: string): LLMProvider => ({ name, decide: async () => ({ thought: name, tool: 'say', args: {} }) })
 
   it('delegates to the current provider and wakes waiters on change', async () => {
-    const switchable = new SwitchableProvider(named('a'))
+    const switchable = new SwitchableProvider(named('a'), { provider: 'ollama', model: 'a' })
     expect((await switchable.decide(request)).thought).toBe('a')
     const changed = switchable.changed()
-    switchable.set(named('b'))
+    switchable.set(named('b'), { provider: 'ollama', model: 'b' })
     await changed
     expect(switchable.name).toBe('b')
     expect((await switchable.decide(request)).thought).toBe('b')
+  })
+
+  const label = { provider: 'openrouter', model: 'a/b' } as const
+  const recording = (provider: LLMProvider, start = label) => {
+    const records: CallRecord[] = []
+    return { records, switchable: new SwitchableProvider(provider, start, (r) => records.push(r)) }
+  }
+  const replying = (reply: () => Promise<Decision>): LLMProvider => ({ name: 'p', decide: reply })
+
+  it('records each call with its label, usage and duration', async () => {
+    const { records, switchable } = recording(replying(async () => ({ thought: '', tool: 'say', args: {}, usage: { inputTokens: 5 } })))
+    await switchable.decide(request)
+    expect(records).toEqual([{ ...label, kind: 'decision', usage: { inputTokens: 5 }, durationMs: expect.any(Number) }])
+    expect(switchable.label).toEqual(label)
+    expect(labelOf({ provider: 'anthropic', model: 'm', effort: 'high', apiKey: 'k' })).toEqual({ provider: 'anthropic', model: 'm' })
+  })
+
+  it('records failed calls and rethrows, keeping the usage of a format error', async () => {
+    const fatal = recording(replying(async () => Promise.reject(new FatalLLMError('no tools'))))
+    await expect(fatal.switchable.decide(request)).rejects.toThrow(FatalLLMError)
+    expect(fatal.records[0]).toMatchObject({ kind: 'decision', error: 'no tools', usage: {} })
+    const format = recording(replying(async () => Promise.reject(new LLMFormatError('bad', { inputTokens: 9 }))))
+    await expect(format.switchable.decide(request)).rejects.toThrow(LLMFormatError)
+    expect(format.records[0]).toMatchObject({ error: 'bad', usage: { inputTokens: 9 } })
+  })
+
+  it('records an in-flight call under the model that started it', async () => {
+    let finish: (d: Decision) => void = () => {}
+    const slow = replying(() => new Promise<Decision>((resolve) => (finish = resolve)))
+    const { records, switchable } = recording(slow)
+    const pending = switchable.decide(request)
+    switchable.set(named('b'), { provider: 'ollama', model: 'b' })
+    finish({ thought: '', tool: 'say', args: {} })
+    await pending
+    expect(records[0]).toMatchObject(label)
+  })
+
+  it('records reflection calls and conversation turns', async () => {
+    const conversation: Conversation = { next: async () => ({ thought: '', tool: 'say', args: {} }), contextTokens: 42, closed: false }
+    const provider: LLMProvider = { ...named('a'), startConversation: () => conversation }
+    const { records, switchable } = recording(provider)
+    await switchable.decide({ ...request, purpose: 'reflection' })
+    const wrapped = switchable.startConversation!({ system: 'SYS', tools })
+    await wrapped.next({ user: 'U' })
+    expect(wrapped.contextTokens).toBe(42)
+    expect(wrapped.closed).toBe(false)
+    expect(records.map((r) => r.kind)).toEqual(['reflection', 'decision'])
   })
 })

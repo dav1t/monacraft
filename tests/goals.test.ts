@@ -35,6 +35,12 @@ describe('parseItemGoal', () => {
     expect(parseItemGoal(data, 'build a shelter')).toBeNull()
     expect(parseItemGoal(data, 'get iron armor')).toBeNull()
   })
+
+  it('aims at what mining a block gives when the block does not drop itself', () => {
+    expect(parseItemGoal(data, 'get iron_ore')).toEqual({ item: 'raw_iron', count: 1 })
+    expect(parseItemGoal(data, 'get stone x8')).toEqual({ item: 'cobblestone', count: 8 })
+    expect(parseItemGoal(data, 'get oak_log x3')).toEqual({ item: 'oak_log', count: 3 })
+  })
 })
 
 describe('matchStep', () => {
@@ -78,15 +84,15 @@ describe('GoalKeeper', () => {
     expect(goals.lastGoalNote()).toBe('last goal reached: get stone_pickaxe')
   })
 
-  it('warns after a step fails twice in a row', () => {
-    const { goals, repos } = setup()
-    goals.setGoal('get stone_pickaxe')
-    goals.afterAction('mine', { block_type: 'oak_log' }, 'error: no reachable oak_log within 64 blocks')
-    goals.afterAction('say', { message: 'hm' }, 'ok: sent')
-    goals.afterAction('mine', { block_type: 'oak_log' }, 'error: no reachable oak_log within 64 blocks')
-    expect(repos.history.recent(1)[0]?.content).toBe(
-      'step "mine oak_log x3" failed 2 times in a row — revise the sub-goal (give_up) or change the steps (set_steps)',
-    )
+  it('counts a goal for an ore as the raw item mining it gives, and reaches it', () => {
+    const { goals, inv, steps, events } = setup({ stone_pickaxe: 1 })
+    goals.setGoal('get iron_ore')
+    expect(goals.section()).toContain('▶ get raw_iron (have 0/1)')
+    expect(steps()).toEqual(['active:mine iron_ore x1 (needs stone_pickaxe) → raw_iron'])
+    inv.raw_iron = 1
+    goals.afterAction('mine', { block_type: 'iron_ore', count: 1 }, 'ok: mined 1/1 iron_ore')
+    expect(goals.tree()).toBeNull()
+    expect(events()).toContain('goal reached: get iron_ore — choose the next one with set_goal')
   })
 
   it('takes sub-goals and steps from the model for other goals, and saves them as templates', () => {

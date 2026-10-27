@@ -12,11 +12,11 @@ import { ToolRegistry } from '../src/tools/registry.ts'
 import { defineTool } from '../src/tools/types.ts'
 
 function fakeProvider(replies: Array<Decision | Error>) {
-  const requests: { system: string; user: string; tools: string[] }[] = []
+  const requests: { system: string; user: string; tools: string[]; purpose?: string }[] = []
   const provider: LLMProvider = {
     name: 'fake',
-    decide: async ({ system, user, tools }) => {
-      requests.push({ system, user, tools: tools.map((t) => t.name) })
+    decide: async ({ system, user, tools, purpose }) => {
+      requests.push({ system, user, tools: tools.map((t) => t.name), ...(purpose && { purpose }) })
       const reply = replies.shift()
       if (!reply) throw new Error('out of replies')
       if (reply instanceof Error) throw reply
@@ -27,7 +27,8 @@ function fakeProvider(replies: Array<Decision | Error>) {
 }
 
 const journal = (args: Record<string, unknown>): Decision => ({ thought: '', tool: 'write_journal', args })
-const quiet = { name: 'Mindy', log: () => {} }
+const waits: number[] = []
+const quiet = { name: 'Mindy', log: () => {}, wait: async (ms: number) => void waits.push(ms) }
 
 describe('consolidate', () => {
   it('writes the journal, lessons, memory and goal changes, and starts a new day', async () => {
@@ -49,6 +50,7 @@ describe('consolidate', () => {
     ])
     const day = await consolidate({ repos, provider, ...quiet }, 'sleep')
     expect(requests[0]?.tools).toEqual(['write_journal'])
+    expect(requests[0]?.purpose).toBe('reflection')
     expect(requests[0]?.user).toContain('[action] mine oak_log → ok')
     expect(requests[0]?.user).toContain(`[${goal.id}] goal: find a village (active)`)
     expect(day).toMatchObject({ kind: 'sleep', journal: 'Chopped trees. Found nothing else.', skills_review: ['chop'] })
@@ -75,14 +77,29 @@ describe('consolidate', () => {
     expect(repos.lessons.list()).toHaveLength(12)
   })
 
-  it('retries invalid output once, then ends the day without reflecting', async () => {
+  it('retries invalid output right away, then ends the day without reflecting', async () => {
     const repos = createRepos(openDatabase(':memory:'))
     repos.history.add('event', 'something')
-    const { provider, requests } = fakeProvider([{ thought: '', tool: 'say', args: {} }, journal({ lessons: [] })])
+    const say = { thought: '', tool: 'say', args: {} }
+    const { provider, requests } = fakeProvider([say, journal({ lessons: [] }), say])
+    waits.length = 0
     const day = await consolidate({ repos, provider, ...quiet }, 'sleep')
-    expect(requests).toHaveLength(2)
+    expect(requests).toHaveLength(3)
+    expect(waits).toEqual([])
     expect(day.journal).toBe('Slept without reflecting.')
     expect(repos.days.todayAfter()).toBe(repos.history.lastId())
+  })
+
+  it('waits longer before each retry after a failed request such as a rate limit', async () => {
+    const repos = createRepos(openDatabase(':memory:'))
+    repos.history.add('event', 'something')
+    const limited = new Error('429 Provider returned error')
+    const { provider, requests } = fakeProvider([limited, limited, journal({ journal: 'Survived.', lessons: ['skeletons shoot from afar'] })])
+    waits.length = 0
+    const day = await consolidate({ repos, provider, ...quiet }, 'sleep')
+    expect(requests).toHaveLength(3)
+    expect(waits).toEqual([10_000, 30_000])
+    expect(day.journal).toBe('Survived.')
   })
 
   it('saves the journal when the model wraps a field in the JSON schema (as qwen3:8b does)', async () => {

@@ -2,7 +2,7 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import type { Bot } from 'mineflayer'
 import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
-import { Agent } from '../src/agent/agent.ts'
+import { Agent, type AgentEvent } from '../src/agent/agent.ts'
 import { openDatabase } from '../src/db/database.ts'
 import { createRepos } from '../src/db/repos.ts'
 import { FatalLLMError, LLMFormatError, type ConverseRequest, type Decision, type LLMProvider } from '../src/llm/types.ts'
@@ -44,6 +44,18 @@ function setup(replies: Array<Decision | Error>, actionTimeoutMs = 2_000) {
 const decide = (tool: string, args: Record<string, unknown> = {}): Decision => ({ thought: `use ${tool}`, tool, args })
 
 describe('Agent.run', () => {
+  it('pauses after a failed step, and stop() cuts the pause short', async () => {
+    const { agent, prompts } = setup([new Error('429 Provider returned error')])
+    const run = agent.run()
+    await sleep(50)
+    expect(prompts).toHaveLength(1)
+    const started = Date.now()
+    agent.stop()
+    await run
+    expect(Date.now() - started).toBeLessThan(1_000)
+    expect(prompts).toHaveLength(1)
+  })
+
   it('rejects instead of retrying on a FatalLLMError', async () => {
     const { agent } = setup([new FatalLLMError('m does not support tool calling')])
     await expect(agent.run()).rejects.toThrow('m does not support tool calling')
@@ -78,6 +90,17 @@ describe('Agent.step', () => {
     expect(repos.history.recent(2)[0]?.content).toBe('<Steve> come here')
   })
 
+  it('tells which tool is running, so the eyes know what they would interrupt', async () => {
+    const { agent } = setup([decide('slow')])
+    expect(agent.currentTool).toBeNull()
+    const step = agent.step()
+    await sleep(50)
+    expect(agent.currentTool).toBe('slow')
+    agent.interrupt('a zombie')
+    await step
+    expect(agent.currentTool).toBeNull()
+  })
+
   it('enforces the action time limit', async () => {
     const { agent, lastEntry } = setup([decide('slow')], 50)
     await agent.step()
@@ -91,26 +114,6 @@ describe('Agent.step', () => {
     expect(await agent.exclusive('reflex: eating', async () => 'ate bread')).toBe('ate bread')
     await step
     expect(lastEntry()).toContain('→ interrupted: reflex: eating')
-  })
-
-  it('warns when the same call fails the same way again, and forgets after a success', async () => {
-    const { agent, repos, lastEntry } = setup([decide('broken', { a: 1, b: 2 }), decide('broken', { b: 2, a: 1 }), decide('echo', { text: 'x' }), decide('broken')])
-    await agent.step()
-    expect(lastEntry()).toContain('→ error: no pickaxe')
-    await agent.step()
-    expect(lastEntry()).toMatch(/^broken failed 2 times in a row with the same error — repeating it will not work/)
-    await agent.step()
-    await agent.step()
-    expect(repos.history.recent(10).filter((h) => h.content.startsWith('broken failed'))).toHaveLength(1)
-  })
-
-  it('warns when the same call keeps giving the same result', async () => {
-    const { agent, repos } = setup([decide('echo', { text: 'x' }), decide('echo', { text: 'x' }), decide('echo', { text: 'x' })])
-    await agent.step()
-    await agent.step()
-    expect(repos.history.recent(10).some((h) => h.content.startsWith('you called echo'))).toBe(false)
-    await agent.step()
-    expect(repos.history.recent(1)[0]?.content).toMatch(/^you called echo with the same arguments 3 times in a row and got the same result/)
   })
 
   it('records invalid LLM replies so the model can correct itself', async () => {
@@ -138,7 +141,41 @@ describe('Agent.step', () => {
     const step = agent.step()
     await agent.exclusive('reflex: eating', async () => 'ate')
     await step
-    expect(lastEntry()).toContain('skipped: a reflex ran while you were deciding')
+    expect(lastEntry()).toContain('skipped: reflex: eating — it happened while you were deciding')
+  })
+
+  it('stops thinking when interrupted, keeps the chat, and decides again with the news', async () => {
+    const repos = createRepos(openDatabase(':memory:'))
+    const prompts: string[] = []
+    const events: AgentEvent[] = []
+    const agent = new Agent({
+      provider: {
+        name: 'fake',
+        // The first call thinks until it is cancelled; the second answers at once.
+        decide: ({ user, signal }) => {
+          prompts.push(user)
+          if (prompts.length > 1) return Promise.resolve(decide('echo', { text: 'x' }))
+          return new Promise((_, reject) => signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true }))
+        },
+      },
+      registry: new ToolRegistry().register(echo),
+      repos,
+      systemPrompt: 'sys',
+      observe: () => ({}),
+      context: { bot: {} as Bot, repos, log: () => {} },
+      log: () => {},
+      onEvent: (event) => events.push(event),
+    })
+    agent.onChat('Steve', 'hi')
+    const step = agent.step()
+    await sleep(20)
+    agent.interrupt('you died')
+    await step
+    expect(events).toContainEqual({ type: 'interrupted', reason: 'you died' })
+    expect(repos.history.recent(10).some((h) => h.kind === 'action')).toBe(false)
+    await agent.step()
+    expect(prompts[1]).toContain('<Steve> hi')
+    expect(repos.history.recent(1)[0]?.content).toContain('→ ok: echo x')
   })
 
   it('keeps unread chat when building the prompt throws', async () => {

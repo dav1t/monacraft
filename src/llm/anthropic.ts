@@ -11,6 +11,7 @@ import {
   type Decision,
   type LLMProvider,
   type StreamDelta,
+  type Usage,
 } from './types.ts'
 
 export type AnthropicEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
@@ -35,12 +36,13 @@ export class AnthropicProvider implements LLMProvider {
 
   constructor(options: AnthropicOptions) {
     this.#options = options
-    this.#client = options.client ?? new Anthropic({ ...(options.apiKey && { apiKey: options.apiKey }) })
+    // The agent retries failed steps itself, with a growing pause; the SDK's own retries would resend the same request unseen.
+    this.#client = options.client ?? new Anthropic({ ...(options.apiKey && { apiKey: options.apiKey }), maxRetries: 0 })
     this.name = `anthropic ${options.model} (${options.effort})`
   }
 
-  async decide({ system, user, tools, onStream }: DecideRequest): Promise<Decision> {
-    const message = await this.send({ system, tools }, [{ role: 'user', content: user }], onStream, false)
+  async decide({ system, user, tools, onStream, signal }: DecideRequest): Promise<Decision> {
+    const message = await this.send({ system, tools }, [{ role: 'user', content: user }], { onStream, signal }, false)
     rejectBroken(message)
     return toDecision(message, tools)
   }
@@ -51,7 +53,7 @@ export class AnthropicProvider implements LLMProvider {
   async send(
     { system, tools }: Setup,
     messages: Anthropic.Beta.BetaMessageParam[],
-    onStream: ((delta: StreamDelta) => void) | undefined,
+    { onStream, signal }: { onStream?: ((delta: StreamDelta) => void) | undefined; signal?: AbortSignal | undefined },
     cacheHistory: boolean,
   ): Promise<Anthropic.Beta.BetaMessage> {
     const stream = this.#client.beta.messages.stream({
@@ -68,7 +70,7 @@ export class AnthropicProvider implements LLMProvider {
       tools: tools.map(toAnthropicTool),
       tool_choice: { type: 'auto', disable_parallel_tool_use: true },
       messages,
-    })
+    }, { ...(signal && { signal }) })
 
     try {
       for await (const event of stream) {
@@ -109,7 +111,7 @@ class AnthropicConversation implements Conversation {
     this.#setup = setup
   }
 
-  async next({ user, result, onStream }: ConverseRequest): Promise<Decision> {
+  async next({ user, result, onStream, signal }: ConverseRequest): Promise<Decision> {
     if (this.closed) throw new Error('this conversation is closed; start a new one')
     const content: Anthropic.Beta.BetaContentBlockParam[] = []
     if (result && this.#pending) {
@@ -121,7 +123,7 @@ class AnthropicConversation implements Conversation {
     const messages: Anthropic.Beta.BetaMessageParam[] = [...this.#history, { role: 'user', content }]
 
     // A failed request keeps nothing, so the same turn can be sent again.
-    const message = await this.#provider.send(this.#setup, messages, onStream, true)
+    const message = await this.#provider.send(this.#setup, messages, { onStream, signal }, true)
     try {
       rejectBroken(message)
     } catch (err) {
@@ -138,9 +140,14 @@ class AnthropicConversation implements Conversation {
 
 /** Replies that cannot be used or continued: a refusal, or a tool call cut off by max_tokens. */
 function rejectBroken(message: Anthropic.Beta.BetaMessage): void {
-  if (message.stop_reason === 'refusal') throw new LLMFormatError('the model declined this request')
+  if (message.stop_reason === 'refusal') throw new LLMFormatError('the model declined this request', usageOfMessage(message))
   const call = message.content.find((block) => block.type === 'tool_use')
-  if (call && message.stop_reason === 'max_tokens') throw new LLMFormatError('the reply was cut off mid tool call')
+  if (call && message.stop_reason === 'max_tokens') throw new LLMFormatError('the reply was cut off mid tool call', usageOfMessage(message))
+}
+
+function usageOfMessage(message: Anthropic.Beta.BetaMessage): Usage | undefined {
+  const usage = message.usage as Anthropic.Beta.BetaUsage | undefined
+  return usage && { inputTokens: readTokens(usage), outputTokens: usage.output_tokens }
 }
 
 /** Cached and uncached input together: everything the model read. */
@@ -151,15 +158,15 @@ function readTokens(usage: Anthropic.Beta.BetaUsage): number {
 function toDecision(message: Anthropic.Beta.BetaMessage, tools: ToolSpec[]): Decision {
   const call = message.content.find((block) => block.type === 'tool_use')
   const text = message.content.flatMap((block) => (block.type === 'text' ? [block.text] : [])).join('').trim()
-  const usage = message.usage as Anthropic.Beta.BetaUsage | undefined
-  const tokens = usage && { promptTokens: readTokens(usage) }
+  const usage = usageOfMessage(message)
+  const tokens = usage && { promptTokens: usage.inputTokens, usage }
   if (call) {
     const thinking = message.content.flatMap((block) => (block.type === 'thinking' ? [block.thinking] : [])).join(' ')
     return { thought: text || truncate(thinking.trim().split('\n')[0] ?? '', 160), tool: call.name, args: toArgs(call.input), ...tokens }
   }
   const fromText = parseDecisionText(text, tools.map((t) => t.name))
   if (fromText) return { ...fromText, ...tokens }
-  throw new LLMFormatError(`no tool call in reply: "${truncate(text, 160)}"`)
+  throw new LLMFormatError(`no tool call in reply: "${truncate(text, 160)}"`, usage)
 }
 
 function toAnthropicTool(spec: ToolSpec): Anthropic.Beta.BetaTool {

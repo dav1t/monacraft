@@ -6,7 +6,7 @@ A Minecraft agent: an LLM plays as a bot on a Minecraft server. It observes the 
 
 - Node.js 22.13+ and pnpm
 - A Minecraft Java server (1.21.11) with `online-mode=false` and `spawn-protection=0`
-- An LLM: Anthropic, any OpenAI-compatible API (OpenAI, OpenRouter, LM Studio, llama.cpp…), or a local model via Ollama
+- An LLM: OpenRouter, Anthropic, any OpenAI-compatible API (OpenAI, LM Studio, llama.cpp…), or a local model via Ollama
 
 ## Quick start
 
@@ -21,13 +21,14 @@ Join the server with your Minecraft client to interact with the bot (use creativ
 
 ## Web panel
 
-Live bot status, an editable goal tree, the model's reasoning feed, **Revelations** (top-priority guidance you write for the bot), a sleep journal, logs, a database editor, and settings for the server and LLM provider (switchable while running). Panel settings, including API keys, are saved to `data/panel.json`.
+Live bot status, an editable goal tree, the model's reasoning feed, **Revelations** (top-priority guidance you write for the bot), a sleep journal, logs, a database editor, and settings for the server and LLM provider (switchable while running). The Bot page has a model dropdown for the active provider (OpenRouter lists every tool-capable model) that switches from the next decision, with this session's cost beside it; the **Models** tab compares models by decisions, failures, tokens, cost and speed. Panel settings, including API keys, are saved to `data/panel.json`.
 
 ## Configuration
 
 See `.env.example`. Main options:
 
-- `LLM_PROVIDER`: `anthropic`, `openai` or `ollama`
+- `LLM_PROVIDER`: `openrouter`, `anthropic`, `openai` or `ollama`
+- `OPENROUTER_MODEL`, `OPENROUTER_API_KEY`
 - `ANTHROPIC_MODEL`, `ANTHROPIC_API_KEY`, `ANTHROPIC_EFFORT`
 - `OPENAI_BASE_URL`, `OPENAI_MODEL`, `OPENAI_API_KEY`
 - `OLLAMA_MODEL`, `OLLAMA_MODE` (`tools` or `json`), `OLLAMA_THINK`, `OLLAMA_NUM_CTX`

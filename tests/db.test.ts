@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { openDatabase } from '../src/db/database.ts'
 import { createRepos } from '../src/db/repos.ts'
+import type { CallRecord } from '../src/llm/providers.ts'
 
 const fresh = () => createRepos(openDatabase(':memory:'))
 
@@ -87,5 +88,51 @@ describe('RevelationRepo', () => {
     expect(revelations.delete(a.id)).toBe(false)
     expect(revelations.update(a.id, 'x')).toBe(false)
     expect(revelations.list()).toHaveLength(1)
+  })
+})
+
+describe('UsageRepo', () => {
+  const call = (model: string, extra: Partial<CallRecord> = {}): CallRecord => ({
+    provider: 'openrouter',
+    model,
+    kind: 'decision',
+    usage: {},
+    durationMs: 1000,
+    ...extra,
+  })
+
+  it('sums cost, tokens and time per model, keeping reflections out of the decision stats', () => {
+    const { usage } = createRepos(openDatabase(':memory:'))
+    usage.record(1, call('a/b', { usage: { inputTokens: 100, outputTokens: 10, cost: 0.01 } }))
+    usage.record(1, call('a/b', { usage: { inputTokens: 200, outputTokens: 20, cost: 0.02 }, durationMs: 3000 }))
+    usage.record(1, call('a/b', { kind: 'reflection', usage: { inputTokens: 1000, cost: 0.5 }, durationMs: 9000 }))
+    const [row] = usage.stats()
+    expect(row).toEqual({ provider: 'openrouter', model: 'a/b', decisions: 2, failed: 0, inputTokens: 1300, outputTokens: 30, cost: 0.53, avgSeconds: 2 })
+  })
+
+  it('counts calls that threw and tool calls that returned an error as failed', () => {
+    const { usage } = createRepos(openDatabase(':memory:'))
+    usage.record(1, call('a/b', { error: 'no tools' }))
+    usage.markToolError(usage.record(1, call('a/b')))
+    usage.record(1, call('a/b'))
+    expect(usage.stats()[0]).toMatchObject({ decisions: 3, failed: 2 })
+  })
+
+  it('reports no cost for models whose provider never sent one', () => {
+    const { usage } = createRepos(openDatabase(':memory:'))
+    usage.record(1, call('m', { provider: 'ollama', usage: { inputTokens: 5 } }))
+    expect(usage.stats()[0]).toMatchObject({ provider: 'ollama', cost: null })
+    expect(usage.sessionCost(1)).toBeNull()
+  })
+
+  it('separates sessions from all time', () => {
+    const { usage } = createRepos(openDatabase(':memory:'))
+    usage.record(1, call('a/b', { usage: { cost: 0.1 } }))
+    usage.record(1, call('a/b', { usage: { cost: 0.1 } }))
+    usage.record(2, call('c/d', { kind: 'reflection', usage: { cost: 0.25 } }))
+    expect(usage.stats(1).map((s) => s.model)).toEqual(['a/b'])
+    expect(usage.stats().map((s) => s.model)).toEqual(['a/b', 'c/d'])
+    expect(usage.sessionCost(1)).toBeCloseTo(0.2)
+    expect(usage.sessionCost(2)).toBe(0.25)
   })
 })

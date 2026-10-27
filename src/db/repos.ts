@@ -3,10 +3,12 @@ import { ContainerRepo } from './containers.ts'
 import { DayRepo, LessonRepo } from './days.ts'
 import { GoalRepo, TemplateRepo } from './goals.ts'
 import { StructureRepo } from './structures.ts'
+import { UsageRepo } from './usage.ts'
 
 export type { StoredContainer } from './containers.ts'
 export type { Day, DayKind, Lesson, LessonSource } from './days.ts'
 export type { Structure } from './structures.ts'
+export type { ModelStats } from './usage.ts'
 export type { GoalKind, GoalRow, GoalStatus, PlanTemplate, TemplateKind } from './goals.ts'
 
 export interface Skill {
@@ -219,6 +221,7 @@ export interface Repos {
   lessons: LessonRepo
   structures: StructureRepo
   containers: ContainerRepo
+  usage: UsageRepo
   /** Runs `fn` in one transaction; it is rolled back if `fn` throws. */
   transaction<T>(fn: () => T): T
 }
@@ -235,6 +238,7 @@ export function createRepos(db: DatabaseSync): Repos {
     lessons: new LessonRepo(db),
     structures: new StructureRepo(db),
     containers: new ContainerRepo(db),
+    usage: new UsageRepo(db),
     transaction<T>(fn: () => T): T {
       db.exec('BEGIN')
       try {

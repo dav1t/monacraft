@@ -25,5 +25,8 @@ export function attempt(action: () => Promise<unknown>): void {
 
 export const time = (ms: number): string => new Date(ms).toLocaleTimeString()
 
+/** A cost in USD, or a dash when the provider reported none. */
+export const usd = (cost: number | null | undefined): string => (cost === null || cost === undefined ? '—' : `$${cost.toFixed(4)}`)
+
 /** SQLite `datetime('now')` values are UTC without a zone. */
 export const sqlTime = (text: string): string => (text ? new Date(`${text.replace(' ', 'T')}Z`).toLocaleString() : '')

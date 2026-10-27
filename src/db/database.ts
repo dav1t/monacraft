@@ -90,6 +90,21 @@ CREATE TABLE IF NOT EXISTS containers (
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (x, y, z)
 );
+CREATE TABLE IF NOT EXISTS llm_calls (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  session       INTEGER NOT NULL,
+  provider      TEXT NOT NULL,
+  model         TEXT NOT NULL,
+  kind          TEXT NOT NULL,
+  input_tokens  INTEGER,
+  output_tokens INTEGER,
+  cost          REAL,
+  duration_ms   INTEGER NOT NULL,
+  error         TEXT,
+  tool_error    INTEGER NOT NULL DEFAULT 0,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS llm_calls_session ON llm_calls (session);
 CREATE TABLE IF NOT EXISTS lessons (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   content    TEXT NOT NULL,

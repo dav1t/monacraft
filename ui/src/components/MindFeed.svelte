@@ -30,7 +30,9 @@
     <label class="check"><input type="checkbox" bind:checked={showThinking} /> show reasoning</label>
   </div>
   <div class="mind-feed" bind:this={feed} {onscroll}>
-    {#each panel.steps as step (step.id)}
+    {#each panel.steps as step, i (step.id)}
+      {@const before = panel.steps[i - 1]?.model}
+      {#if step.model && before && step.model !== before}<div class="model-switch">🧠 switched to {step.model}</div>{/if}
       <MindStep {step} />
     {:else}
       <div class="empty-note light">The bot’s thoughts will stream here.</div>

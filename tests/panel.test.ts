@@ -6,8 +6,10 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { loadConfig } from '../src/config.ts'
 import { openDatabase } from '../src/db/database.ts'
 import { createRepos } from '../src/db/repos.ts'
+import type { LLMProvider } from '../src/llm/types.ts'
+import type { Session, SessionOptions } from '../src/session.ts'
 import { Controller } from '../src/web/controller.ts'
-import type { PanelEvent } from '../src/web/protocol.ts'
+import type { MindStep, PanelEvent } from '../src/web/protocol.ts'
 import { createPanelServer } from '../src/web/server.ts'
 import { applyPatch, defaultSettings, loadSettings, publicSettings } from '../src/web/settings.ts'
 
@@ -22,6 +24,20 @@ describe('panel settings', () => {
     const switched = applyPatch(settings, { active: 'anthropic', providers: { anthropic: { effort: 'high' } } })
     expect(switched.active).toBe('anthropic')
     expect(switched.providers.anthropic).toMatchObject({ model: 'claude-opus-5-5', effort: 'high' })
+  })
+
+  it('stores OpenRouter settings and keeps its key', () => {
+    const settings = applyPatch(defaults(), { active: 'openrouter', providers: { openrouter: { model: 'x/y', apiKey: 'k' } } })
+    expect(settings.active).toBe('openrouter')
+    expect(settings.providers.openrouter).toEqual({ provider: 'openrouter', model: 'x/y', apiKey: 'k' })
+    expect(applyPatch(settings, { providers: { openrouter: { apiKey: '' } } }).providers.openrouter.apiKey).toBe('k')
+    expect(publicSettings(settings).providers.openrouter).toMatchObject({ apiKey: '', hasApiKey: true })
+  })
+
+  it('fills in OpenRouter for settings saved before it existed', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'monacraft-')), 'panel.json')
+    writeFileSync(path, JSON.stringify({ active: 'ollama', providers: { ollama: { model: 'qwen3:8b' } } }))
+    expect(loadSettings(path, defaults()).providers.openrouter).toEqual(defaults().providers.openrouter)
   })
 
   it('never sends keys to the browser', () => {
@@ -138,6 +154,21 @@ describe('panel server', () => {
     expect(saved).toMatchObject({ active: 'anthropic', providers: { anthropic: { apiKey: 'secret' } } })
   })
 
+  it('answers a model list that cannot be loaded with no models instead of an error', async () => {
+    const { call } = await start()
+    await call('PUT', '/api/settings', { active: 'openai', providers: { openai: { baseURL: 'http://127.0.0.1:1/v1', model: 'm' } } })
+    const res = await call('GET', '/api/models')
+    expect(res.status).toBe(200)
+    expect(res.body).toMatchObject({ provider: 'openai', current: 'm', models: null, error: expect.any(String) })
+  })
+
+  it('lists the models of a provider that is not active yet, for the settings form', async () => {
+    const { call } = await start()
+    await call('PUT', '/api/settings', { providers: { openai: { baseURL: 'http://127.0.0.1:1/v1', model: 'm' } } })
+    expect((await call('GET', '/api/models?provider=openai')).body).toMatchObject({ provider: 'openai', current: 'm', models: null })
+    expect((await call('GET', '/api/models?provider=nope')).status).toBe(400)
+  })
+
   it('accepts body-less actions like disconnect when sent as JSON, as the panel does', async () => {
     const { base, call } = await start()
     // Without a JSON content type the server refuses, so other websites can't send commands.
@@ -169,5 +200,80 @@ describe('panel server', () => {
     expect(await (await fetch(`${base}/database`)).text()).toBe('<p>panel</p>')
     expect((await fetch(`${base}/missing.js`)).status).toBe(404)
     expect(await (await fetch(`${base}/..%2fpackage.json`)).text()).toBe('<p>panel</p>')
+  })
+})
+
+describe('controller usage tracking', () => {
+  /** A session whose agent makes one decision per `step()` call, with the given tool outcome. */
+  function setup(costs: number[]) {
+    const dir = mkdtempSync(join(tmpdir(), 'monacraft-'))
+    const repos = createRepos(openDatabase(':memory:'))
+    let options: SessionOptions | undefined
+    const provider: LLMProvider = {
+      name: 'fake',
+      decide: async () => ({ thought: '', tool: 'say', args: {}, usage: { inputTokens: 10, outputTokens: 2, cost: costs.shift() } }),
+    }
+    const startSession = async (o: SessionOptions): Promise<Session> => {
+      options = o
+      return {
+        bot: { username: 'Bot' } as Session['bot'],
+        agent: { run: () => new Promise<void>(() => {}), interrupt() {} } as unknown as Session['agent'],
+        sleep: {} as Session['sleep'],
+        stop() {},
+      }
+    }
+    const settings = applyPatch(defaults(), { active: 'openrouter', providers: { openrouter: { model: 'a/b' } } })
+    const controller = new Controller({ repos, settings, settingsPath: join(dir, 'panel.json'), startSession, createProvider: () => provider })
+    const steps: MindStep[] = []
+    controller.subscribe((e) => e.type === 'step' && steps.push(e.data))
+    const step = async (outcome: string) => {
+      const o = options!
+      o.onAgentEvent?.({ type: 'deciding', promptChars: 1 })
+      const decision = await o.provider.decide({ system: '', user: '', tools: [] })
+      o.onAgentEvent?.({ type: 'decision', decision })
+      o.onAgentEvent?.({ type: 'outcome', tool: decision.tool, outcome })
+    }
+    const minecraft = { host: 'localhost', port: 25565, username: 'Bot', version: '1.21.11' }
+    return { controller, repos, step, steps, connect: () => controller.connect(minecraft) }
+  }
+
+  it('records each decision under the session and shows its model and cost on the step', async () => {
+    const { controller, repos, step, steps, connect } = setup([0.01, 0.02])
+    await connect()
+    await step('ok: said')
+    await step('error: nobody listened')
+    expect(steps.at(-1)).toMatchObject({ model: 'a/b', cost: 0.02, inputTokens: 10, outputTokens: 2 })
+    expect(controller.status()).toMatchObject({ model: 'a/b', sessionCost: 0.03 })
+    expect(repos.usage.stats()[0]).toMatchObject({ provider: 'openrouter', model: 'a/b', decisions: 2, failed: 1 })
+    expect(controller.stats().session).toEqual(controller.stats().allTime)
+    controller.disconnect()
+  })
+
+  it('never marks an older decision when recording the latest one failed', async () => {
+    const { controller, repos, step, connect } = setup([0.01, 0.02])
+    await connect()
+    await step('ok: said')
+    const record = repos.usage.record.bind(repos.usage)
+    repos.usage.record = () => {
+      throw new Error('disk full')
+    }
+    await step('error: nobody listened')
+    repos.usage.record = record
+    expect(repos.usage.stats()[0]).toMatchObject({ decisions: 1, failed: 0 })
+    controller.disconnect()
+  })
+
+  it('starts a new session on every join', async () => {
+    const { controller, step, connect } = setup([0.01, 0.05])
+    await connect()
+    await step('ok: said')
+    controller.disconnect()
+    expect(controller.status().sessionCost).toBe(0.01)
+    await connect()
+    expect(controller.status().sessionCost).toBeNull()
+    await step('ok: said')
+    expect(controller.stats().session[0]).toMatchObject({ decisions: 1, cost: 0.05 })
+    expect(controller.stats().allTime[0]).toMatchObject({ decisions: 2 })
+    controller.disconnect()
   })
 })

@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { MindStep } from '../../../src/web/protocol.ts'
-  import { time } from '../lib/api.ts'
+  import { time, usd } from '../lib/api.ts'
 
   let { step }: { step: MindStep } = $props()
 
@@ -17,7 +17,14 @@
 </script>
 
 <div class="step" class:live={!done}>
-  <div class="step-head"><span class="num">#{step.id}</span><span>{time(step.startedAt)}</span></div>
+  <div class="step-head">
+    <span class="num">#{step.id}</span><span>{time(step.startedAt)}</span>
+    {#if step.model}
+      <span class="step-usage">
+        {step.model}{#if step.cost !== undefined}{' · '}{usd(step.cost)}{/if}{#if step.inputTokens !== undefined}{' · '}{step.inputTokens}/{step.outputTokens ?? '?'} tok{/if}
+      </span>
+    {/if}
+  </div>
   {#if step.thinking}<div class="thinking" bind:this={thinkingBox}>{step.thinking}</div>{/if}
   {#if step.text}<div class="text">{step.text}</div>{/if}
   {#if step.decision}

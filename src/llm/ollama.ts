@@ -2,7 +2,7 @@ import { Ollama, type ChatRequest, type Message, type Tool as OllamaTool } from 
 import { truncate } from '../lib/text.ts'
 import type { ToolSpec } from '../tools/types.ts'
 import { describeTools, parseDecisionText, toArgs } from './parse.ts'
-import { FatalLLMError, LLMFormatError, type DecideRequest, type Decision, type LLMProvider } from './types.ts'
+import { FatalLLMError, LLMFormatError, usageOf, type DecideRequest, type Decision, type LLMProvider, type Usage } from './types.ts'
 
 export type OllamaMode = 'tools' | 'json'
 export type ThinkSetting = boolean | 'low' | 'medium' | 'high'
@@ -49,7 +49,7 @@ export class OllamaProvider implements LLMProvider {
     }
   }
 
-  async #decide({ system, user, tools, onStream }: DecideRequest): Promise<Decision> {
+  async #decide({ system, user, tools, onStream, signal }: DecideRequest): Promise<Decision> {
     const { model, mode, think, temperature = 0.4, numCtx } = this.#options
     const names = tools.map((t) => t.name)
     const base = {
@@ -61,14 +61,15 @@ export class OllamaProvider implements LLMProvider {
     }
 
     if (mode === 'tools') {
-      const { message, promptTokens } = await this.#chat(
+      const { message, usage } = await this.#chat(
         { ...base, messages: [{ role: 'system', content: system }, { role: 'user', content: user }], tools: tools.map(toOllamaTool) },
         onStream,
+        signal,
       )
-      return { ...parseToolReply(message, names), ...(promptTokens && { promptTokens }) }
+      return { ...parseToolReply(message, names, usage), ...counts(usage) }
     }
 
-    const { message, promptTokens } = await this.#chat(
+    const { message, usage } = await this.#chat(
       {
         ...base,
         messages: [
@@ -83,39 +84,61 @@ ${JSON_INSTRUCTIONS}` },
         format: decisionSchema(names),
       },
       onStream,
+      signal,
     )
     const decision = parseDecisionText(message.content, names)
-    if (!decision) throw new LLMFormatError(`reply is not a valid decision: "${truncate(message.content, 160)}"`)
-    return { ...decision, ...(promptTokens && { promptTokens }) }
+    if (!decision) throw new LLMFormatError(`reply is not a valid decision: "${truncate(message.content, 160)}"`, usage)
+    return { ...decision, ...counts(usage) }
   }
 
-  /** One chat request; streamed (and reported piece by piece) only when someone listens. */
-  async #chat(request: Omit<ChatRequest, 'stream'>, onStream: DecideRequest['onStream']): Promise<{ message: Message; promptTokens?: number }> {
+  /**
+   * One chat request; streamed (and reported piece by piece) only when someone listens. Only a stream can be cancelled;
+   * a cancelled plain request is waited out and its reply dropped.
+   */
+  async #chat(
+    request: Omit<ChatRequest, 'stream'>,
+    onStream: DecideRequest['onStream'],
+    signal: AbortSignal | undefined,
+  ): Promise<{ message: Message; usage?: Usage }> {
     if (!onStream) {
       const response = await this.#client.chat({ ...request, stream: false })
-      return { message: response.message, promptTokens: response.prompt_eval_count }
+      signal?.throwIfAborted()
+      const usage = usageOf({ inputTokens: response.prompt_eval_count, outputTokens: response.eval_count })
+      return { message: response.message, ...(usage && { usage }) }
     }
     const message: Message = { role: 'assistant', content: '', thinking: '', tool_calls: [] }
-    let promptTokens: number | undefined
-    for await (const part of await this.#client.chat({ ...request, stream: true })) {
-      // The final part carries the counts (the whole prompt, even when Ollama reused its cache).
-      if (part.prompt_eval_count) promptTokens = part.prompt_eval_count
-      const { content, thinking, tool_calls } = part.message
-      if (thinking) {
-        message.thinking += thinking
-        onStream({ kind: 'thinking', text: thinking })
+    let usage: Usage | undefined
+    const stream = await this.#client.chat({ ...request, stream: true })
+    const abort = () => stream.abort()
+    signal?.addEventListener('abort', abort, { once: true })
+    if (signal?.aborted) abort()
+    try {
+      for await (const part of stream) {
+        // The final part carries the counts (the whole prompt, even when Ollama reused its cache).
+        if (part.prompt_eval_count) usage = usageOf({ inputTokens: part.prompt_eval_count, outputTokens: part.eval_count })
+        const { content, thinking, tool_calls } = part.message
+        if (thinking) {
+          message.thinking += thinking
+          onStream({ kind: 'thinking', text: thinking })
+        }
+        if (content) {
+          message.content += content
+          onStream({ kind: 'text', text: content })
+        }
+        for (const call of tool_calls ?? []) {
+          message.tool_calls?.push(call)
+          onStream({ kind: 'tool', text: `${call.function.name} ${JSON.stringify(call.function.arguments)}` })
+        }
       }
-      if (content) {
-        message.content += content
-        onStream({ kind: 'text', text: content })
-      }
-      for (const call of tool_calls ?? []) {
-        message.tool_calls?.push(call)
-        onStream({ kind: 'tool', text: `${call.function.name} ${JSON.stringify(call.function.arguments)}` })
-      }
+    } finally {
+      signal?.removeEventListener('abort', abort)
     }
-    return { message, promptTokens }
+    return { message, ...(usage && { usage }) }
   }
+}
+
+function counts(usage: Usage | undefined): Pick<Decision, 'promptTokens' | 'usage'> {
+  return { ...(usage?.inputTokens && { promptTokens: usage.inputTokens }), ...(usage && { usage }) }
 }
 
 function toOllamaTool(spec: ToolSpec): OllamaTool {
@@ -133,7 +156,7 @@ function decisionSchema(names: string[]): Record<string, unknown> {
   }
 }
 
-function parseToolReply(message: Message, names: string[]): Decision {
+function parseToolReply(message: Message, names: string[], usage: Usage | undefined): Decision {
   const call = message.tool_calls?.[0]
   if (call) {
     const thought = message.content.trim() || truncate(message.thinking?.trim().split('\n')[0] ?? '', 160)
@@ -142,5 +165,5 @@ function parseToolReply(message: Message, names: string[]): Decision {
   // Some models write the call as JSON text instead of using the tool-call channel.
   const fromText = parseDecisionText(message.content, names)
   if (fromText) return fromText
-  throw new LLMFormatError(`no tool call in reply: "${truncate(message.content, 160)}"`)
+  throw new LLMFormatError(`no tool call in reply: "${truncate(message.content, 160)}"`, usage)
 }

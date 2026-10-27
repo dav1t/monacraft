@@ -2,7 +2,7 @@ import type { GoalRow, GoalStatus } from '../db/goals.ts'
 import type { Repos } from '../db/repos.ts'
 import { truncate } from '../lib/text.ts'
 import { normalizeTitle, words } from '../lib/words.ts'
-import type { McData } from '../planning/data.ts'
+import { blockDrops, type McData } from '../planning/data.ts'
 import { describeStep, planItem } from '../planning/planner.ts'
 import type { PlanningWorld } from '../planning/world.ts'
 
@@ -10,8 +10,6 @@ export const MAX_SUBGOALS = 8
 export const MAX_STEPS = 10
 /** Goals kept paused at once; older ones are dropped. */
 const MAX_PAUSED = 5
-/** A step that fails this many times in a row gets a warning in the history. */
-const FAILS_BEFORE_WARNING = 2
 
 /** Tools that don't act in the world, so they neither finish nor fail a step. */
 const META_TOOLS = new Set([
@@ -30,14 +28,23 @@ export interface GoalTree {
 
 const ITEM_GOAL = /^(?:(?:get|craft|make|obtain|collect|gather|smelt)\s+)?(?:(?:a|an|some)\s+)?(?:(\d+)\s+)?([a-z][a-z0-9_ ]*?)(?:\s*x\s*(\d+)|\s+(\d+))?$/
 
-/** "craft a stone pickaxe", "get 24 iron_ingot", "iron_ingot x24" → the item and count; null for other goals. */
+/**
+ * "craft a stone pickaxe", "get 24 iron_ingot", "iron_ingot x24" → the item and count; null for other goals. A block
+ * that does not drop itself stands for what mining it gives: "get iron_ore" is reached with raw_iron in the inventory,
+ * since the ore itself only drops with silk touch.
+ */
 export function parseItemGoal(data: McData, text: string): { item: string; count: number } | null {
   const match = ITEM_GOAL.exec(text.trim().toLowerCase().replace(/[.!]+$/, ''))
   if (!match) return null
   const name = match[2]!.trim().replace(/\s+/g, '_')
-  const count = Number(match[1] ?? match[3] ?? match[4] ?? 1)
+  const count = Math.max(1, Math.min(Number(match[1] ?? match[3] ?? match[4] ?? 1), 64 * 36))
   for (const candidate of [name, name.replace(/s$/, ''), name.replace(/es$/, '')]) {
-    if (data.itemsByName[candidate]) return { item: candidate, count: Math.max(1, Math.min(count, 64 * 36)) }
+    const item = data.itemsByName[candidate]
+    if (!item) continue
+    const block = data.blocksByName[candidate]
+    const drops = block ? blockDrops(block) : []
+    const drop = drops.length > 0 && !drops.includes(item.id) ? data.items[drops[0]!]?.name : undefined
+    return { item: drop ?? candidate, count }
   }
   return null
 }
@@ -293,15 +300,7 @@ export class GoalKeeper {
       } else if (target.attempts > 0) this.#repos.goals.update(target.id, { attempts: 0 })
       this.refresh()
     } else if (outcome.startsWith('error:')) {
-      const attempts = target.attempts + 1
-      this.#repos.goals.update(target.id, { attempts })
-      if (attempts % FAILS_BEFORE_WARNING === 0) {
-        this.#event(
-          step
-            ? `step "${step.title}" failed ${attempts} times in a row — revise the sub-goal (give_up) or change the steps (set_steps)`
-            : `sub-goal "${sub.title}" failed ${attempts} times in a row — give_up and replan it, or set_steps`,
-        )
-      }
+      this.#repos.goals.update(target.id, { attempts: target.attempts + 1 })
     }
   }
 
@@ -365,7 +364,9 @@ export class GoalKeeper {
   #progress(title: string): string {
     const item = this.#item(title)
     if (!item || !this.#world) return ''
-    return ` (have ${this.#world.inventory()[item.item] ?? 0}/${item.count})`
+    // Name the item when the title names something else, e.g. "get iron_ore" counts raw_iron.
+    const named = title.toLowerCase().includes(item.item) ? '' : ` ${item.item}`
+    return ` (have ${this.#world.inventory()[item.item] ?? 0}/${item.count}${named})`
   }
 
   #planSubgoals(goal: GoalRow, target: { item: string; count: number }): boolean {

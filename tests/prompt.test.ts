@@ -43,7 +43,7 @@ describe('buildUserPrompt', () => {
       lessons: many(15).map((i) => `lesson ${i}`),
       memory: many(30).map((i) => ({ key: `k${i}`, value: 'v' })),
       skills: many(12).map((i) => skill(`s${i}`, 'x')),
-      history: many(20).map((i) => ({ id: i, kind: 'event' as const, content: `e${i}`, created_at: '' })),
+      history: many(CAPS.history + 5).map((i) => ({ id: i, kind: 'event' as const, content: `e${i}`, created_at: '' })),
       templates: [template, template, template, template, template],
     })
     expect(text.match(/## Yesterday\n(j+)/)?.[1]?.length).toBe(CAPS.journal - 1)
@@ -54,7 +54,7 @@ describe('buildUserPrompt', () => {
     expect(text).toContain('(10 older facts not shown)')
     expect(text).toContain('(4 more skills not shown)')
     expect(text).not.toContain('[event] e4\n')
-    expect(text).toContain('- [event] e19')
+    expect(text).toContain(`- [event] e${CAPS.history + 4}`)
     expect(text.match(/^- t: /gm)).toHaveLength(CAPS.templates)
   })
 })

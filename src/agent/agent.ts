@@ -27,6 +27,8 @@ export type AgentEvent =
   | { type: 'usage'; promptTokens: number; estimated: boolean }
   | { type: 'outcome'; tool: string; outcome: string }
   | { type: 'invalid'; error: string }
+  /** Thinking was cut short by something that happened meanwhile; the next step decides with the news. */
+  | { type: 'interrupted'; reason: string }
 
 export interface AgentOptions {
   provider: LLMProvider
@@ -49,13 +51,16 @@ export class Agent {
   readonly #mutex = new Mutex()
   #unreadChat: string[] = []
   #action: AbortController | null = null
+  /** Cancels the model call in flight, when the agent is thinking. */
+  #thinking: AbortController | null = null
+  #actionTool: string | null = null
   #running = false
   #stopped = false
+  /** Cuts short the pause after a failed step when the agent stops. */
+  readonly #stopping = new AbortController()
   #reflexRan = false
   #paused: { promise: Promise<void>; resume: () => void } | null = null
   #promptChars = 0
-  /** The last failed call and how many times in a row it failed the same way. */
-  #repeat = { key: '', count: 0 }
   /** The running conversation, for providers that keep one, with the provider and day it belongs to. */
   #conversation: { value: Conversation; provider: string; day: number } | null = null
   /** The last action's result, not yet sent to the conversation. */
@@ -81,6 +86,11 @@ export class Agent {
     return this.#promptChars
   }
 
+  /** The tool whose action is running, if any. */
+  get currentTool(): string | null {
+    return this.#actionTool
+  }
+
   get paused(): boolean {
     return this.#paused !== null
   }
@@ -104,9 +114,10 @@ export class Agent {
     this.interrupt(`${username} said something — answer, then pick this action up again if it still makes sense`)
   }
 
-  /** Abort the running action, if any. */
+  /** Abort the running action, or the thinking about the next one, if any. */
   interrupt(reason: string): void {
     this.#action?.abort(new Interrupt(reason))
+    this.#thinking?.abort(new Interrupt(reason))
   }
 
   /** Abort the running action and run `fn` before the agent's next action (used by reflexes). */
@@ -157,16 +168,26 @@ export class Agent {
     let decision: Decision
     onEvent({ type: 'deciding', promptChars: user.length })
     const onStream = (delta: StreamDelta) => onEvent({ type: 'stream', delta })
+    const thinking = new AbortController()
+    this.#thinking = thinking
+    const { signal } = thinking
     try {
       if (provider.startConversation) {
         const current = conversation ?? this.#startConversation(provider, day)
-        decision = await current.next({ user, ...(conversation && this.#result && { result: this.#result }), onStream })
+        decision = await current.next({ user, ...(conversation && this.#result && { result: this.#result }), onStream, signal })
       } else {
-        decision = await provider.decide({ system: systemPrompt, user, tools: registry.specs(), onStream })
+        decision = await provider.decide({ system: systemPrompt, user, tools: registry.specs(), onStream, signal })
       }
     } catch (err) {
       // Keep the chat unanswered so the next prompt still shows it.
       this.#unreadChat.unshift(...chat)
+      if (signal.aborted) {
+        // Nothing of this turn is kept: the next one shows the same news (and the last result) plus what interrupted it.
+        const reason = errorMessage(signal.reason)
+        log(`✋ stopped thinking: ${reason}`)
+        onEvent({ type: 'interrupted', reason })
+        return
+      }
       if (!(err instanceof LLMFormatError)) throw err
       // The conversation took this turn (and the result in it); news from now on comes after it.
       this.#result = null
@@ -176,6 +197,8 @@ export class Agent {
       onEvent({ type: 'invalid', error: err.message })
       repos.history.add('event', `your last reply was invalid (${errorMessage(err)}); reply with exactly one tool call`)
       return
+    } finally {
+      this.#thinking = null
     }
     this.#result = null
     this.#goalShown = goalSection
@@ -188,12 +211,14 @@ export class Agent {
     onEvent({ type: 'usage', promptTokens, estimated })
     log(`💭 ${decision.thought || '…'} (prompt ${estimated ? '~' : ''}${promptTokens} tokens)\n   → ${decision.tool} ${JSON.stringify(decision.args)}`)
     onEvent({ type: 'decision', decision })
-    const outcome = await this.#mutex.run(() => this.#execute(decision))
+    // The reply can arrive just as an interrupt lands; it was decided without the news, so it does not run.
+    const outcome = signal.aborted
+      ? `skipped: ${errorMessage(signal.reason)} — it happened while you were deciding`
+      : await this.#mutex.run(() => this.#execute(decision))
     log(`   ${truncate(outcome, 300)}`)
     onEvent({ type: 'outcome', tool: decision.tool, outcome })
     repos.history.add('action', formatAction(decision, outcome))
     this.#result = { outcome, isError: outcome.startsWith('error:') }
-    this.#checkRepeat(decision, outcome)
     try {
       goals.afterAction(decision.tool, decision.args, outcome)
     } catch (err) {
@@ -222,39 +247,23 @@ export class Agent {
     return value
   }
 
-  /**
-   * Small models loop: they retry a failing call unchanged, or repeat a call whose result never changes. Say so
-   * plainly after the second identical failure or the third identical result.
-   */
-  #checkRepeat({ tool, args }: Decision, outcome: string): void {
-    // Skipped or interrupted calls never ran, so they neither count nor break a streak.
-    if (outcome.startsWith('skipped:') || outcome.startsWith('interrupted:')) return
-    const key = `${tool} ${JSON.stringify(sortKeys(args))} ${outcome}`
-    this.#repeat = key === this.#repeat.key ? { key, count: this.#repeat.count + 1 } : { key, count: 1 }
-    const failed = outcome.startsWith('error:')
-    if (this.#repeat.count < (failed ? REPEATED_FAILURES : REPEATED_RESULTS)) return
-    this.#options.repos.history.add(
-      'event',
-      failed
-        ? `${tool} failed ${this.#repeat.count} times in a row with the same error — repeating it will not work. Fix the cause the error names first, ` +
-            'or change the plan (set_steps, give_up and plan_goal, or set_goal).'
-        : `you called ${tool} with the same arguments ${this.#repeat.count} times in a row and got the same result — it is not getting you anywhere. ` +
-            'Do the next step of your goal instead.',
-    )
-  }
-
   async run(): Promise<void> {
     this.#running = true
+    let failures = 0
     while (this.#running) {
       while (this.#paused && this.#running) await this.#paused.promise
       if (!this.#running) return
       const started = Date.now()
       try {
         await this.step()
+        failures = 0
       } catch (err) {
         if (err instanceof FatalLLMError) throw err
-        this.#options.log(`⚠ step failed: ${errorMessage(err)} — retrying in 5s`)
-        await sleep(5_000)
+        // Rate limits and outages last a while; hammering the server only extends them.
+        const pause = Math.min(RETRY_FIRST_MS * 2 ** failures, RETRY_MAX_MS)
+        failures++
+        this.#options.log(`⚠ step failed: ${errorMessage(err)} — retrying in ${pause / 1000}s`)
+        await sleep(pause, undefined, { signal: this.#stopping.signal }).catch(() => {})
       }
       const elapsed = Date.now() - started
       if (elapsed < 1_000) await sleep(1_000 - elapsed)
@@ -264,6 +273,7 @@ export class Agent {
   stop(): void {
     this.#running = false
     this.#stopped = true
+    this.#stopping.abort()
     this.interrupt('shutting down')
     this.resume()
   }
@@ -276,6 +286,7 @@ export class Agent {
     const limit = this.#options.registry.get(tool)?.timeoutMs ?? this.#options.actionTimeoutMs
     const timer = setTimeout(() => controller.abort(new Interrupt(`time limit of ${limit / 1000}s reached`)), limit)
     this.#action = controller
+    this.#actionTool = tool
     // A tool that ignores its signal is cut off here. It may keep running in the background.
     let onAbort: () => void = () => {}
     const cutOff = new Promise<never>((_, reject) => {
@@ -295,17 +306,14 @@ export class Agent {
       clearTimeout(timer)
       controller.signal.removeEventListener('abort', onAbort)
       this.#action = null
+      this.#actionTool = null
     }
   }
 }
 
-/** Identical failures before the agent is told it is looping. */
-const REPEATED_FAILURES = 2
-/** Identical successful calls (same arguments, same result) before the agent is told it is looping. */
-const REPEATED_RESULTS = 3
-
-const sortKeys =(args: Record<string, unknown>): Record<string, unknown> =>
-  Object.fromEntries(Object.entries(args).sort(([a], [b]) => a.localeCompare(b)))
+/** Pause after a failed step; it doubles with each failure in a row, up to the max. */
+const RETRY_FIRST_MS = 5_000
+const RETRY_MAX_MS = 60_000
 
 function formatAction({ thought, tool, args }: Decision, outcome: string): string {
   const why = thought ? `(${truncate(thought, 160)}) ` : ''

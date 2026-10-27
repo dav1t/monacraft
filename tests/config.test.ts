@@ -32,6 +32,15 @@ describe('loadConfig', () => {
     expect(loadConfig({ PANEL_PORT: '8080' }).panel.port).toBe(8080)
   })
 
+  it('reads OpenRouter settings', () => {
+    expect(loadConfig({}).providers.openrouter).toEqual({ provider: 'openrouter', model: 'openai/gpt-5-mini', apiKey: '' })
+    expect(loadConfig({ LLM_PROVIDER: 'openrouter', OPENROUTER_MODEL: 'google/gemini-2.5-flash', OPENROUTER_API_KEY: 'k' }).llm).toEqual({
+      provider: 'openrouter',
+      model: 'google/gemini-2.5-flash',
+      apiKey: 'k',
+    })
+  })
+
   it('rejects bad values', () => {
     expect(() => loadConfig({ OLLAMA_THINK: 'maybe' })).toThrow(/OLLAMA_THINK/)
     expect(() => loadConfig({ OLLAMA_MODE: 'chat' })).toThrow(/OLLAMA_MODE/)

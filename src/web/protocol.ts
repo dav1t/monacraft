@@ -1,8 +1,9 @@
 // Types shared by the panel server and the Svelte UI. Keep this file free of runtime imports.
 import type { ConnectOptions } from '../bot/connect.ts'
 import type { GoalTree } from '../agent/goals.ts'
-import type { Day, GoalRow, GoalStatus, HistoryEntry, Lesson, MemoryEntry, PlanTemplate, Revelation, Skill, Structure } from '../db/repos.ts'
-import type { AnthropicSettings, OllamaSettings, OpenAISettings, ProviderId } from '../llm/providers.ts'
+import type { Day, GoalRow, GoalStatus, HistoryEntry, Lesson, MemoryEntry, ModelStats, PlanTemplate, Revelation, Skill, Structure } from '../db/repos.ts'
+import type { ModelInfo } from '../llm/models.ts'
+import type { AnthropicSettings, OllamaSettings, OpenAISettings, OpenRouterSettings, ProviderId } from '../llm/providers.ts'
 import type { Decision, StreamDelta } from '../llm/types.ts'
 import type { PlayerState, SlotItem } from './state.ts'
 
@@ -15,6 +16,8 @@ export type {
   HistoryEntry,
   Lesson,
   MemoryEntry,
+  ModelInfo,
+  ModelStats,
   PlanTemplate,
   PlayerState,
   ProviderId,
@@ -41,6 +44,10 @@ export interface Status {
   server: string
   username: string
   provider: string
+  /** The active model. */
+  model: string
+  /** What this (or the last) session's model calls cost, in USD; null when nothing reported a cost. */
+  sessionCost: number | null
   /** Tokens the model read for the last decision (0 before the first one). */
   promptTokens: number
   /** True when the provider did not report the count and it was estimated. */
@@ -63,9 +70,22 @@ export interface MindStep {
   text: string
   tool: string
   promptTokens?: number
+  /** The model that made this decision, and what it used. */
+  model?: string
+  cost?: number
+  inputTokens?: number
+  outputTokens?: number
   decision?: Decision
   outcome?: string
   invalid?: string
+}
+
+/** The active provider's models; `models` is null when they cannot be listed (the panel then shows no dropdown). */
+export interface ModelList {
+  provider: ProviderId
+  current: string
+  models: ModelInfo[] | null
+  error?: string
 }
 
 /** Settings as the browser sees them: API keys blanked, with a flag saying whether one is stored. */
@@ -76,10 +96,11 @@ export interface PublicSettings {
     ollama: OllamaSettings
     openai: OpenAISettings & { hasApiKey: boolean }
     anthropic: AnthropicSettings & { hasApiKey: boolean }
+    openrouter: OpenRouterSettings & { hasApiKey: boolean }
   }
 }
 
-export type DbTable = 'memory' | 'skills' | 'history' | 'revelations' | 'goals' | 'days' | 'lessons' | 'templates' | 'structures'
+export type DbTable = 'memory' | 'skills' | 'history' | 'revelations' | 'goals' | 'days' | 'lessons' | 'templates' | 'structures' | 'llm_calls'
 
 export interface Snapshot {
   status: Status

@@ -126,11 +126,13 @@ describe('OllamaProvider token counts', () => {
       chat: async (r: ChatRequest) => {
         requests.push(r)
         const message = { role: 'assistant', content: '', tool_calls: [{ function: { name: 'say', arguments: { message: 'hi' } } }] }
-        return { message, prompt_eval_count: 1831 }
+        return { message, prompt_eval_count: 1831, eval_count: 12 }
       },
     } as unknown as Pick<Ollama, 'chat'>
     const provider = new OllamaProvider({ model: 'qwen3:8b', mode: 'tools', numCtx: 8192, client })
     expect(provider.contextWindow).toBe(8192)
-    expect(await provider.decide(request)).toMatchObject({ tool: 'say', promptTokens: 1831 })
+    const decision = await provider.decide(request)
+    expect(decision).toMatchObject({ tool: 'say', promptTokens: 1831 })
+    expect(decision.usage).toEqual({ inputTokens: 1831, outputTokens: 12 })
   })
 })
