@@ -24,6 +24,8 @@ export interface SessionOptions {
   provider: LLMProvider
   repos: Repos
   log: (line: string) => void
+  /** Players whose chat waits for the bot's next decision instead of interrupting it (the panel's other bots). */
+  isPeer?: (username: string) => boolean
   onAgentEvent?: (event: AgentEvent) => void
   onSleepEvent?: (event: SleepEvent) => void
   /** The connection closed without stop() being called (kicked, server down…). */
@@ -38,7 +40,7 @@ export interface Session {
   stop(): void
 }
 
-export async function startSession({ minecraft, provider, repos, log, onAgentEvent, onSleepEvent, onEnd }: SessionOptions): Promise<Session> {
+export async function startSession({ minecraft, provider, repos, log, isPeer = () => false, onAgentEvent, onSleepEvent, onEnd }: SessionOptions): Promise<Session> {
   const { host, port, username, version } = minecraft
   log(`connecting to ${host}:${port} as ${username} (Minecraft ${version}), brain: ${provider.name}`)
   const bot = await connectBot(minecraft)
@@ -62,7 +64,7 @@ export async function startSession({ minecraft, provider, repos, log, onAgentEve
   const sleep = new SleepScheduler({ bot, agent, repos, provider, name: bot.username, log, ...(onSleepEvent && { onEvent: onSleepEvent }) })
 
   const onPlayerMessage = (from: string, message: string): void => {
-    if (from !== bot.username) agent.onChat(from, message)
+    if (from !== bot.username) agent.onChat(from, message, !isPeer(from))
   }
   bot.on('chat', onPlayerMessage)
   bot.on('whisper', onPlayerMessage)

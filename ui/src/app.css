@@ -431,3 +431,25 @@ fieldset { border: none; padding: 0; margin: 0; }
   .bot-grid { grid-template-columns: minmax(0, 1fr); }
   .splash { display: none; }
 }
+
+/* ---------- bot switcher ---------- */
+.botbar { display: flex; align-items: center; gap: 6px; padding: 8px 20px; background: rgba(0, 0, 0, 0.45); flex-wrap: wrap; }
+.bot-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--text);
+  font-size: 20px;
+  color: var(--white);
+  background: rgba(0, 0, 0, 0.35);
+  border: 2px solid #000;
+  padding: 2px 10px;
+  cursor: pointer;
+}
+.bot-chip:hover { color: var(--yellow); }
+.bot-chip.selected { background: var(--stone); outline: 2px solid var(--white); outline-offset: -2px; }
+.bot-dot { width: 10px; height: 10px; background: var(--gray); box-shadow: 1px 1px 0 #000; }
+.bot-dot.online { background: var(--green); }
+.bot-dot.connecting { background: var(--yellow); }
+.bot-chip .dim { font-size: 16px; }
+.botbar-actions { margin-left: auto; display: flex; gap: 6px; }

@@ -126,3 +126,14 @@ export interface PanelEvents {
 }
 
 export type PanelEvent = { [K in Exclude<keyof PanelEvents, 'snapshot'>]: { type: K; data: PanelEvents[K] } }[Exclude<keyof PanelEvents, 'snapshot'>]
+
+/** One bot of the fleet, for the bot switcher. */
+export interface BotSummary {
+  id: string
+  username: string
+  server: string
+  connection: ConnectionStatus
+  brain: BrainStatus
+  provider: string
+  model: string
+}

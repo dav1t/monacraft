@@ -44,11 +44,28 @@ function remapFor(bot: Bot, viewerVersion: string): Uint32Array | null {
   return map
 }
 
-/** Lets each browser on /pov/ watch the current bot; `allow` vets the handshake like any other panel request. */
-export function attachPov(server: Server, currentBot: () => Bot | null, allow: (req: IncomingMessage) => boolean): void {
-  const io = new SocketServer(server, { path: '/pov/socket.io', serveClient: false, allowRequest: (req, done) => done(null, allow(req)) })
+const SOCKET_PATH = '/pov/socket.io/'
+
+/**
+ * The viewer page at /pov/<bot>/ opens its socket at /pov/<bot>/socket.io/; that is rewritten to the one socket.io
+ * path with the bot in the query, so a single server serves every bot.
+ */
+function rewriteSocketPath(req: IncomingMessage): void {
+  const match = /^\/pov\/([^/]+)\/socket\.io\/(.*)$/.exec(req.url ?? '')
+  if (!match) return
+  const [path, query = ''] = match[2]!.split(/\?(.*)/s)
+  req.url = `${SOCKET_PATH}${path}?bot=${match[1]}${query ? `&${query}` : ''}`
+}
+
+/** Lets each browser on /pov/<bot>/ watch that bot; `allow` vets the handshake like any other panel request. */
+export function attachPov(server: Server, botFor: (id: string) => Bot | null, allow: (req: IncomingMessage) => boolean): void {
+  const io = new SocketServer(server, { path: SOCKET_PATH, serveClient: false, allowRequest: (req, done) => done(null, allow(req)) })
+  // socket.io wrapped the server's listeners; these run before it.
+  server.prependListener('request', rewriteSocketPath)
+  server.prependListener('upgrade', rewriteSocketPath)
   io.on('connection', (socket) => {
-    const bot = currentBot()
+    const id = socket.handshake.query.bot
+    const bot = typeof id === 'string' ? botFor(id) : null
     const version = bot && getVersion(bot.version)
     if (!bot || !version) {
       socket.disconnect(true)

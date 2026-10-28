@@ -1,5 +1,6 @@
 // Live panel state, fed by the server's event stream.
 import type {
+  BotSummary,
   DbTable,
   GoalsView,
   LogEntry,
@@ -10,12 +11,24 @@ import type {
   PublicSettings,
   Status,
 } from '../../../src/web/protocol.ts'
-import { api } from './api.ts'
+import { api, useBot } from './api.ts'
 
 const MAX_LOGS = 1500
 const MAX_STEPS = 60
+const BOT_KEY = 'monacraft.bot'
+
+function savedBot(): string | null {
+  try {
+    return localStorage.getItem(BOT_KEY)
+  } catch {
+    return null
+  }
+}
 
 class Panel {
+  /** Every bot on the panel; the views below show the selected one. */
+  bots = $state<BotSummary[]>([])
+  botId = $state<string | null>(null)
   status = $state<Status | null>(null)
   settings = $state<PublicSettings | null>(null)
   logs = $state<LogEntry[]>([])
@@ -25,6 +38,7 @@ class Panel {
   /** The goal tree, kept here because it shows on several tabs. */
   goals = $state<GoalsView>({ tree: null, past: [] })
   streamLost = $state(false)
+  #botEvents: EventSource | null = null
   /** Bumped when a table changes; views that show the table reload on change. */
   versions = $state<Record<DbTable, number>>({
     memory: 0,
@@ -41,10 +55,39 @@ class Panel {
     scars: 0,
   })
 
+  /** Follows the bot list, and the selected bot. */
   connect(): void {
     const events = new EventSource('/api/events')
     events.addEventListener('open', () => (this.streamLost = false))
     events.addEventListener('error', () => (this.streamLost = true))
+    events.addEventListener('bots', (e) => {
+      this.bots = JSON.parse((e as MessageEvent<string>).data) as BotSummary[]
+      if (this.botId !== null && this.bots.some((b) => b.id === this.botId)) return
+      const saved = savedBot()
+      const next = this.bots.find((b) => b.id === saved) ?? this.bots[0]
+      if (next) this.select(next.id)
+    })
+  }
+
+  /** Shows another bot: its own stream, state and database. */
+  select(id: string): void {
+    if (id === this.botId) return
+    this.#botEvents?.close()
+    this.botId = id
+    useBot(id)
+    try {
+      localStorage.setItem(BOT_KEY, id)
+    } catch {}
+    this.status = null
+    this.settings = null
+    this.player = null
+    this.logs = []
+    this.steps = []
+    this.memory = []
+    this.goals = { tree: null, past: [] }
+
+    const events = new EventSource(`/api/bots/${encodeURIComponent(id)}/events`)
+    this.#botEvents = events
     const on = <K extends keyof PanelEvents>(type: K, handle: (data: PanelEvents[K]) => void): void =>
       events.addEventListener(type, (e) => handle(JSON.parse((e as MessageEvent<string>).data) as PanelEvents[K]))
 
@@ -87,12 +130,15 @@ class Panel {
     })
   }
 
+  // An answer that arrives after switching bots belongs to the other bot.
   loadMemory(): void {
-    api<MemoryEntry[]>('GET', '/api/memory').then((memory) => (this.memory = memory), () => {})
+    const id = this.botId
+    api<MemoryEntry[]>('GET', '/api/memory').then((memory) => id === this.botId && (this.memory = memory), () => {})
   }
 
   loadGoals(): void {
-    api<GoalsView>('GET', '/api/goals').then((goals) => (this.goals = goals), () => {})
+    const id = this.botId
+    api<GoalsView>('GET', '/api/goals').then((goals) => id === this.botId && (this.goals = goals), () => {})
   }
 }
 

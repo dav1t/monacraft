@@ -1,11 +1,9 @@
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { loadConfig } from './config.ts'
-import { openDatabase } from './db/database.ts'
-import { createRepos } from './db/repos.ts'
-import { Controller } from './web/controller.ts'
+import { Fleet } from './web/fleet.ts'
 import { createPanelServer, type PanelServerOptions } from './web/server.ts'
-import { defaultSettings, loadSettings } from './web/settings.ts'
+import { defaultSettings } from './web/settings.ts'
 
 try {
   process.loadEnvFile()
@@ -23,24 +21,23 @@ async function uiOptions(dev: boolean): Promise<Omit<PanelServerOptions, 'bindHo
   return { ui: vite.middlewares }
 }
 
-/** Panel mode: a web page to connect the bot, watch it think and edit its memory. .env only provides defaults. */
+/** Panel mode: a web page to connect bots, watch them think and edit their memory. .env only provides defaults. */
 async function main(): Promise<void> {
   const config = loadConfig()
-  const settingsPath = join(config.dbPath === ':memory:' ? 'data' : dirname(config.dbPath), 'panel.json')
-  const controller = new Controller({
-    repos: createRepos(openDatabase(config.dbPath)),
-    settings: loadSettings(settingsPath, defaultSettings(config)),
-    settingsPath,
+  const fleet = new Fleet({
+    dir: config.dbPath === ':memory:' ? 'data' : dirname(config.dbPath),
+    firstDbPath: config.dbPath,
+    defaults: defaultSettings(config),
     print: (line) => console.log(line),
   })
 
   const { host, port } = config.panel
-  const server = createPanelServer(controller, { bindHost: host, ...(await uiOptions(process.argv.includes('--dev'))) })
+  const server = createPanelServer(fleet, { bindHost: host, ...(await uiOptions(process.argv.includes('--dev'))) })
   server.listen(port, host, () => console.log(`panel: http://${host === '0.0.0.0' ? 'localhost' : host}:${port}`))
 
   process.once('SIGINT', () => {
     console.log('shutting down')
-    controller.disconnect()
+    fleet.disconnectAll()
     server.closeAllConnections()
     server.close()
     setTimeout(() => process.exit(0), 500)

@@ -12,6 +12,7 @@ import { defineTool } from '../src/tools/types.ts'
 const echo = defineTool({ name: 'echo', description: '', schema: z.object({ text: z.string() }), run: async ({ text }) => `echo ${text}` })
 const slow = defineTool({ name: 'slow', description: '', schema: z.object({}), run: (_args, { signal }) => sleep(5_000, 'finished', { signal }) })
 const broken = defineTool({ name: 'broken', description: '', schema: z.object({}), run: async () => { throw new Error('no pickaxe') } })
+const wait = defineTool({ name: 'wait', description: '', schema: z.object({}), run: (_args, { signal }) => sleep(5_000, 'waited', { signal }) })
 const hang = defineTool({ name: 'hang', description: '', schema: z.object({}), run: () => sleep(5_000, 'late') })
 
 function setup(replies: Array<Decision | Error>, actionTimeoutMs = 2_000) {
@@ -29,7 +30,7 @@ function setup(replies: Array<Decision | Error>, actionTimeoutMs = 2_000) {
   }
   const agent = new Agent({
     provider,
-    registry: new ToolRegistry().register(echo, slow, broken, hang),
+    registry: new ToolRegistry().register(echo, slow, broken, hang, wait),
     repos,
     systemPrompt: 'sys',
     observe: () => ({ health: 20 }),
@@ -88,6 +89,27 @@ describe('Agent.step', () => {
     await agent.step()
     expect(prompts[1]).toContain('## New chat — reply with say, or act on the request first (e.g. go_to_player) and reply after\n<Steve> come here')
     expect(repos.history.recent(2)[0]?.content).toBe('<Steve> come here')
+  })
+
+  it('lets chat that is not urgent wait for the next decision without interrupting or skipping anything', async () => {
+    const { agent, prompts, lastEntry } = setup([decide('slow'), decide('echo', { text: 'x' })], 100)
+    const step = agent.step()
+    await sleep(50)
+    agent.onChat('Bob', 'hello', false)
+    await step
+    expect(lastEntry()).toContain('→ interrupted: time limit of 0.1s reached')
+    await agent.step()
+    expect(prompts[1]).toContain('<Bob> hello')
+    expect(lastEntry()).toContain('→ ok: echo x')
+  })
+
+  it('still cuts a wait short for chat that is not urgent', async () => {
+    const { agent, lastEntry } = setup([decide('wait')])
+    const step = agent.step()
+    await sleep(50)
+    agent.onChat('Bob', 'hello', false)
+    await step
+    expect(lastEntry()).toContain('→ interrupted: Bob said something')
   })
 
   it('tells which tool is running, so the eyes know what they would interrupt', async () => {

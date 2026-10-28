@@ -24,6 +24,10 @@ export interface ControllerOptions {
   settingsPath: string
   /** Also print log lines here (the terminal). */
   print?: (line: string) => void
+  /** Vetoes a join by throwing (e.g. another bot already plays under that name). */
+  beforeConnect?: (minecraft: ConnectOptions) => void
+  /** Players whose chat must not interrupt the bot (the other bots on the panel). */
+  isPeer?: (username: string) => boolean
   /** Replaceable in tests. */
   startSession?: (options: SessionOptions) => Promise<Session>
   createProvider?: (settings: LLMSettings) => LLMProvider
@@ -34,6 +38,8 @@ export class Controller {
   readonly repos: Repos
   readonly #settingsPath: string
   readonly #print: (line: string) => void
+  readonly #beforeConnect: (minecraft: ConnectOptions) => void
+  readonly #isPeer: (username: string) => boolean
   readonly #provider: SwitchableProvider
   readonly #startSession: (options: SessionOptions) => Promise<Session>
   readonly #createProvider: (settings: LLMSettings) => LLMProvider
@@ -58,11 +64,13 @@ export class Controller {
   /** Each provider's last model list, with the settings (minus the model) it was loaded with. */
   readonly #models = new Map<ProviderId, { key: string; list: Promise<ModelInfo[]> }>()
 
-  constructor({ repos, settings, settingsPath, print = () => {}, ...overrides }: ControllerOptions) {
+  constructor({ repos, settings, settingsPath, print = () => {}, beforeConnect = () => {}, isPeer = () => false, ...overrides }: ControllerOptions) {
     this.repos = repos
     this.#settings = settings
     this.#settingsPath = settingsPath
     this.#print = print
+    this.#beforeConnect = beforeConnect
+    this.#isPeer = isPeer
     this.#startSession = overrides.startSession ?? startSession
     this.#createProvider = overrides.createProvider ?? createProvider
     const llm = activeLLM(settings)
@@ -83,6 +91,11 @@ export class Controller {
       steps: this.#steps,
       state: this.#session ? readPlayerState(this.#session.bot) : null,
     }
+  }
+
+  /** The full settings, API keys included; never send these to the browser. */
+  settings(): PanelSettings {
+    return this.#settings
   }
 
   /** The connected bot, for the POV viewer. */
@@ -117,6 +130,7 @@ export class Controller {
 
   async connect(minecraft: ConnectOptions): Promise<void> {
     if (this.#connection !== 'offline') throw new Error('already connected — disconnect first')
+    this.#beforeConnect(minecraft)
     this.#updateSettings({ minecraft })
     this.#error = null
     this.#sessionId = Date.now()
@@ -130,6 +144,7 @@ export class Controller {
         provider: this.#provider,
         repos: this.repos,
         log: (line) => this.log(line),
+        isPeer: this.#isPeer,
         // A decision in flight when the session ends must not touch the (offline) status.
         onAgentEvent: (event) => {
           if (this.#session === session) this.#onAgentEvent(event)

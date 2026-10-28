@@ -1,10 +1,23 @@
 import { toast } from './ui.svelte.ts'
 
-/** JSON request to the panel server. Failures are shown as a toast and rethrown. */
+let bot = ''
+
+/** Sends per-bot requests to this bot. */
+export function useBot(id: string): void {
+  bot = id
+}
+
+/** A bot route (`/api/memory`) as served for the selected bot (`/api/bots/<id>/memory`); the bot list's own routes pass through. */
+export function botPath(path: string): string {
+  if (!path.startsWith('/api/') || path === '/api/bots' || path.startsWith('/api/bots/') || path.startsWith('/api/icons/')) return path
+  return `/api/bots/${encodeURIComponent(bot)}${path.slice(4)}`
+}
+
+/** JSON request to the panel server; bot routes go to the selected bot. Failures are shown as a toast and rethrown. */
 export async function api<T = unknown>(method: string, path: string, body?: unknown): Promise<T> {
   // The server only accepts writes sent as JSON (so other sites can't post to it), even ones without data.
   const write = method !== 'GET' && method !== 'DELETE'
-  const res = await fetch(path, {
+  const res = await fetch(botPath(path), {
     method,
     headers: write ? { 'content-type': 'application/json' } : {},
     body: write ? JSON.stringify(body ?? {}) : undefined,

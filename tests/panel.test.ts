@@ -9,6 +9,7 @@ import { createRepos } from '../src/db/repos.ts'
 import type { LLMProvider } from '../src/llm/types.ts'
 import type { Session, SessionOptions } from '../src/session.ts'
 import { Controller } from '../src/web/controller.ts'
+import { Fleet, type FleetOptions } from '../src/web/fleet.ts'
 import type { MindStep, PanelEvent } from '../src/web/protocol.ts'
 import { createPanelServer } from '../src/web/server.ts'
 import { applyPatch, defaultSettings, loadSettings, publicSettings } from '../src/web/settings.ts'
@@ -63,23 +64,26 @@ describe('panel server', () => {
 
   async function start() {
     const dir = mkdtempSync(join(tmpdir(), 'monacraft-'))
-    const repos = createRepos(openDatabase(':memory:'))
-    const controller = new Controller({ repos, settings: defaults(), settingsPath: join(dir, 'panel.json') })
+    const fleet = new Fleet({ dir, firstDbPath: ':memory:', defaults: defaults() })
+    const controller = fleet.get('mindy')!
+    const { repos } = controller
     const events: PanelEvent[] = []
     controller.subscribe((e) => events.push(e))
-    const server = createPanelServer(controller, { bindHost: '127.0.0.1' })
+    const server = createPanelServer(fleet, { bindHost: '127.0.0.1' })
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
     close = () => server.close()
-    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+    const root = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+    // Bot routes live under /api/bots/<id>; these tests talk to the first bot.
+    const base = `${root}/api/bots/mindy`
     const call = async (method: string, path: string, body?: unknown) => {
-      const res = await fetch(base + path, {
+      const res = await fetch(base + path.replace(/^\/api/, ''), {
         method,
         headers: body === undefined ? {} : { 'content-type': 'application/json' },
         body: body === undefined ? undefined : JSON.stringify(body),
       })
       return { status: res.status, body: (await res.json()) as unknown }
     }
-    return { base, call, repos, events, dir }
+    return { root, base, call, repos, events, dir }
   }
 
   it('manages revelations and records them in the history', async () => {
@@ -172,25 +176,26 @@ describe('panel server', () => {
   it('accepts body-less actions like disconnect when sent as JSON, as the panel does', async () => {
     const { base, call } = await start()
     // Without a JSON content type the server refuses, so other websites can't send commands.
-    expect((await fetch(`${base}/api/disconnect`, { method: 'POST' })).status).toBe(400)
+    expect((await fetch(`${base}/disconnect`, { method: 'POST' })).status).toBe(400)
     expect(await call('POST', '/api/disconnect', {})).toEqual({ status: 200, body: { ok: true } })
   })
 
   it('rejects non-JSON writes, bad input, and unknown routes', async () => {
-    const { base, call } = await start()
-    const form = await fetch(`${base}/api/revelations`, { method: 'POST', body: 'content=x', headers: { 'content-type': 'application/x-www-form-urlencoded' } })
+    const { root, base, call } = await start()
+    const form = await fetch(`${base}/revelations`, { method: 'POST', body: 'content=x', headers: { 'content-type': 'application/x-www-form-urlencoded' } })
     expect(form.status).toBe(400)
     expect((await call('POST', '/api/connect', { host: 'x', port: 1, username: 'a b', version: '1' })).status).toBe(400)
     expect((await call('GET', '/api/nope')).status).toBe(404)
     expect((await call('PATCH', '/api/memory')).status).toBe(405)
-    expect((await fetch(`${base}/`)).status).toBe(503)
+    expect((await fetch(`${root}/`)).status).toBe(503)
+    expect((await fetch(`${root}/api/bots/nobody/memory`)).status).toBe(404)
   })
 
   it('serves the built UI with a fallback to index.html and no escapes', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'monacraft-ui-'))
     writeFileSync(join(dir, 'index.html'), '<p>panel</p>')
-    const controller = new Controller({ repos: createRepos(openDatabase(':memory:')), settings: defaults(), settingsPath: join(dir, 'panel.json') })
-    const server = createPanelServer(controller, { bindHost: '127.0.0.1', staticDir: dir })
+    const fleet = new Fleet({ dir, firstDbPath: ':memory:', defaults: defaults() })
+    const server = createPanelServer(fleet, { bindHost: '127.0.0.1', staticDir: dir })
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
     close = () => server.close()
     const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
@@ -200,6 +205,107 @@ describe('panel server', () => {
     expect(await (await fetch(`${base}/database`)).text()).toBe('<p>panel</p>')
     expect((await fetch(`${base}/missing.js`)).status).toBe(404)
     expect(await (await fetch(`${base}/..%2fpackage.json`)).text()).toBe('<p>panel</p>')
+  })
+})
+
+describe('fleet', () => {
+  const fakeSession = async (o: SessionOptions): Promise<Session> => ({
+    bot: { username: o.minecraft.username } as Session['bot'],
+    agent: { run: () => new Promise<void>(() => {}), interrupt() {} } as unknown as Session['agent'],
+    sleep: {} as Session['sleep'],
+    stop() {},
+  })
+  const options = (dir: string): FleetOptions => ({ dir, firstDbPath: join(dir, 'agent.db'), defaults: defaults(), controller: { startSession: fakeSession } })
+
+  it('starts with the bot the panel had before, under its database and settings', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'monacraft-'))
+    writeFileSync(join(dir, 'panel.json'), JSON.stringify({ minecraft: { host: 'mc.local', port: 25565, username: 'Steve', version: '1.21.11' } }))
+    const fleet = new Fleet(options(dir))
+    expect(fleet.list()).toMatchObject([{ id: 'steve', username: 'Steve', server: 'mc.local:25565', connection: 'offline' }])
+    expect(JSON.parse(readFileSync(join(dir, 'bots.json'), 'utf8'))).toEqual([{ id: 'steve', dbPath: join(dir, 'agent.db'), settingsPath: join(dir, 'panel.json') }])
+  })
+
+  it('gives each new bot its own mind, copying only server and brain settings', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'monacraft-'))
+    const fleet = new Fleet(options(dir))
+    fleet.get('mindy')!.repos.memory.set('base', '1 64 2')
+    expect(fleet.add('Mindy', 'mindy')).toMatchObject({ id: 'mindy-2', username: 'Mindy' })
+    expect(fleet.add('Bob', 'mindy').id).toBe('bob')
+    const bob = fleet.get('bob')!
+    expect(bob.repos.memory.list()).toEqual([])
+    expect(bob.settings().providers.anthropic.apiKey).toBe('secret')
+    bob.repos.memory.set('home', 'hill')
+    expect(fleet.get('mindy')!.repos.memory.list().map((m) => m.key)).toEqual(['base'])
+    expect(() => fleet.add('Ann', 'nobody')).toThrow('not found')
+  })
+
+  it("keeps the bot list across restarts and never reuses a removed bot's mind", () => {
+    const dir = mkdtempSync(join(tmpdir(), 'monacraft-'))
+    const fleet = new Fleet(options(dir))
+    fleet.add('Bob')
+    fleet.get('bob')!.repos.memory.set('home', 'hill')
+    expect(() => fleet.remove('nobody')).toThrow('not found')
+    fleet.remove('bob')
+    expect(fleet.list().map((b) => b.id)).toEqual(['mindy'])
+    expect(() => fleet.remove('mindy')).toThrow('last bot')
+    expect(fleet.add('Bob').id).toBe('bob-2')
+    expect(new Fleet(options(dir)).list().map((b) => b.id)).toEqual(['mindy', 'bob-2'])
+  })
+
+  it('refuses a second bot under the same name on the same server, and removing an online bot', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'monacraft-'))
+    const fleet = new Fleet(options(dir))
+    fleet.add('Bob')
+    const server = { host: 'localhost', port: 25565, version: '1.21.11' }
+    await fleet.get('mindy')!.connect({ ...server, username: 'Bob' })
+    await expect(fleet.get('bob')!.connect({ ...server, username: 'bob' })).rejects.toThrow('already on localhost:25565')
+    await fleet.get('bob')!.connect({ ...server, port: 25566, username: 'Bob' })
+    expect(fleet.list().map((b) => b.connection)).toEqual(['online', 'online'])
+    expect(() => fleet.remove('bob')).toThrow('disconnect')
+    fleet.disconnectAll()
+    expect(fleet.list().map((b) => b.connection)).toEqual(['offline', 'offline'])
+  })
+
+  it("tells each bot which players are the other bots on its server, so their chat doesn't interrupt it", async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'monacraft-'))
+    const sessions = new Map<string, SessionOptions>()
+    const fleet = new Fleet({
+      ...options(dir),
+      controller: { startSession: async (o) => (sessions.set(o.minecraft.username, o), fakeSession(o)) },
+    })
+    fleet.add('Bob')
+    fleet.add('Ann')
+    const server = { host: 'localhost', port: 25565, version: '1.21.11' }
+    await fleet.get('mindy')!.connect({ ...server, username: 'Mindy' })
+    await fleet.get('bob')!.connect({ ...server, username: 'Bob' })
+    await fleet.get('ann')!.connect({ ...server, port: 25566, username: 'Ann' })
+    const isPeer = sessions.get('Mindy')!.isPeer!
+    expect([isPeer('bob'), isPeer('Ann'), isPeer('Steve'), isPeer('Mindy')]).toEqual([true, false, false, false])
+    fleet.get('bob')!.disconnect()
+    expect(isPeer('Bob')).toBe(false)
+    fleet.disconnectAll()
+  })
+
+  it('serves the bot list and announces changes', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'monacraft-'))
+    const fleet = new Fleet(options(dir))
+    const seen: string[][] = []
+    fleet.subscribe((bots) => seen.push(bots.map((b) => `${b.id}:${b.connection}`)))
+    const server = createPanelServer(fleet, { bindHost: '127.0.0.1' })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    try {
+      const root = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+      const post = (body: unknown) => fetch(`${root}/api/bots`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+      expect((await post({ username: 'a b' })).status).toBe(400)
+      expect(await (await post({ username: 'Bob', from: 'mindy' })).json()).toMatchObject({ id: 'bob', connection: 'offline' })
+      expect(await (await fetch(`${root}/api/bots`)).json()).toMatchObject([{ id: 'mindy' }, { id: 'bob' }])
+      expect((await fetch(`${root}/api/bots/bob/memory`)).status).toBe(200)
+      expect((await fetch(`${root}/api/bots/bob`, { method: 'DELETE' })).status).toBe(200)
+      expect((await fetch(`${root}/api/bots/bob`, { method: 'DELETE' })).status).toBe(400)
+      expect(seen).toEqual([['mindy:offline', 'bob:offline'], ['mindy:offline']])
+    } finally {
+      server.close()
+    }
   })
 })
 

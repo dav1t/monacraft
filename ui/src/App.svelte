@@ -1,4 +1,5 @@
 <script lang="ts">
+  import BotBar from './components/BotBar.svelte'
   import BotPage from './components/BotPage.svelte'
   import DatabasePage from './components/DatabasePage.svelte'
   import Dialog from './components/Dialog.svelte'
@@ -34,10 +35,13 @@
   }
 </script>
 
-<TopBar onSettings={() => show('settings')} />
+<BotBar onAdded={() => show('settings')} />
 {#if panel.streamLost}
   <div class="stream-lost">Lost connection to the panel server — retrying…</div>
 {/if}
+<!-- Everything below belongs to the selected bot; switching bots starts it fresh. -->
+{#key panel.botId}
+<TopBar onSettings={() => show('settings')} />
 
 <nav class="tabs">
   {#each Object.entries(TABS) as [id, label] (id)}
@@ -64,6 +68,7 @@
     <SettingsPage onJoined={() => show('bot')} />
   {/if}
 </main>
+{/key}
 
 <Dialog />
 <Tooltip />

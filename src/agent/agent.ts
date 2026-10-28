@@ -50,7 +50,8 @@ export interface AgentOptions {
 export class Agent {
   readonly #options: Required<AgentOptions>
   readonly #mutex = new Mutex()
-  #unreadChat: string[] = []
+  /** Chat not yet shown to the model; `urgent` chat interrupts, the rest waits for the next decision. */
+  #unreadChat: { line: string; urgent: boolean }[] = []
   #action: AbortController | null = null
   /** Cancels the model call in flight, when the agent is thinking. */
   #thinking: AbortController | null = null
@@ -110,9 +111,12 @@ export class Agent {
     paused?.resume()
   }
 
-  onChat(username: string, message: string): void {
-    this.#unreadChat.push(`<${username}> ${message}`)
-    this.interrupt(`${username} said something — answer, then pick this action up again if it still makes sense`)
+  /** Chat that is not `urgent` is shown at the next decision and only cuts a wait short. */
+  onChat(username: string, message: string, urgent = true): void {
+    this.#unreadChat.push({ line: `<${username}> ${message}`, urgent })
+    const reason = `${username} said something — answer, then pick this action up again if it still makes sense`
+    if (urgent) this.interrupt(reason)
+    else if (this.#actionTool === 'wait') this.#action?.abort(new Interrupt(reason))
   }
 
   /** Abort the running action, or the thinking about the next one, if any. */
@@ -133,7 +137,8 @@ export class Agent {
   async step(): Promise<void> {
     const { provider, registry, repos, log, systemPrompt, onEvent, goals } = this.#options
     this.#reflexRan = false
-    const chat = [...this.#unreadChat]
+    const unread = [...this.#unreadChat]
+    const chat = unread.map((c) => c.line)
     goals.refresh()
     const goal = repos.goals.active()
     const goalSection = goals.section()
@@ -166,7 +171,7 @@ export class Agent {
           containers: repos.containers.list().map(describeContainer),
           templates: goal && goals.needsPlan() ? repos.templates.match('goal', goal.title, CAPS.templates) : [],
         })
-    this.#unreadChat.splice(0, chat.length)
+    this.#unreadChat.splice(0, unread.length)
     this.#promptChars = user.length
     let decision: Decision
     onEvent({ type: 'deciding', promptChars: user.length })
@@ -183,7 +188,7 @@ export class Agent {
       }
     } catch (err) {
       // Keep the chat unanswered so the next prompt still shows it.
-      this.#unreadChat.unshift(...chat)
+      this.#unreadChat.unshift(...unread)
       if (signal.aborted) {
         // Nothing of this turn is kept: the next one shows the same news (and the last result) plus what interrupted it.
         const reason = errorMessage(signal.reason)
@@ -283,7 +288,7 @@ export class Agent {
 
   async #execute({ tool, args }: Decision): Promise<string> {
     if (this.#stopped) return 'skipped: shutting down'
-    if (this.#unreadChat.length > 0) return 'skipped: a player spoke before the action started'
+    if (this.#unreadChat.some((c) => c.urgent)) return 'skipped: a player spoke before the action started'
     if (this.#reflexRan) return 'skipped: a reflex ran while you were deciding'
     const controller = new AbortController()
     const limit = this.#options.registry.get(tool)?.timeoutMs ?? this.#options.actionTimeoutMs
