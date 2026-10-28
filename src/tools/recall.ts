@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { describeScar } from '../db/identity.ts'
 import { describeStructure } from '../db/structures.ts'
 import { truncate } from '../lib/text.ts'
 import { words } from '../lib/words.ts'
@@ -9,12 +10,12 @@ const HISTORY_CANDIDATES = 300
 const LINE_CHARS = 220
 
 /** Earlier sources win ties: what was built and remembered is more reliable than an old action. */
-const SOURCES = ['built', 'memory', 'lesson', 'journal', 'history'] as const
+const SOURCES = ['built', 'memory', 'lesson', 'scar', 'journal', 'history'] as const
 
 export const recall = defineTool({
   name: 'recall',
   description:
-    'Look up what you did, built or learned before — older history, past journals, memory, lessons and structures — by keywords, e.g. "furnace", "iron ore", "shelter".',
+    'Look up what you did, built or learned before — older history, past journals, memory, lessons, deaths and structures — by keywords, e.g. "furnace", "iron ore", "shelter".',
   schema: z.object({ query: z.string().trim().min(2).max(100), limit: z.number().int().min(1).max(12).default(8) }),
   run: async ({ query, limit }, { repos }) => {
     const terms = [...words(query)]
@@ -30,6 +31,7 @@ export const recall = defineTool({
     for (const s of repos.structures.list()) add('built', describeStructure(s))
     for (const m of repos.memory.list()) add('memory', `${m.key}: ${m.value}`)
     for (const l of repos.lessons.list()) add('lesson', l.content)
+    for (const s of repos.scars.list()) add('scar', `${s.created_at.slice(0, 10)}: ${describeScar(s)}; lost ${s.lost}`)
     for (const d of repos.days.list(60)) add('journal', `${d.ended_at.slice(0, 10)}: ${d.journal}`)
     for (const h of repos.history.search(terms, HISTORY_CANDIDATES)) add('history', `${h.created_at.slice(5, 16)} ${h.content}`)
     if (found.length === 0) return `nothing found about "${query}"`

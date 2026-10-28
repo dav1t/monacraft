@@ -105,6 +105,22 @@ CREATE TABLE IF NOT EXISTS llm_calls (
   created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS llm_calls_session ON llm_calls (session);
+CREATE TABLE IF NOT EXISTS identity (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  self       TEXT NOT NULL,
+  wants      TEXT NOT NULL,
+  reason     TEXT NOT NULL,
+  seeds      TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS scars (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  cause      TEXT NOT NULL,
+  place      TEXT NOT NULL,
+  lost       TEXT NOT NULL,
+  meaning    TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 CREATE TABLE IF NOT EXISTS lessons (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   content    TEXT NOT NULL,

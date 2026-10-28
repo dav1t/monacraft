@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-export type DayKind = 'sleep' | 'nap'
+/** A night's sleep, a nap when the day gets long, or the reflection right after a death. */
+export type DayKind = 'sleep' | 'nap' | 'death'
 
 export interface Day {
   id: number
@@ -18,7 +19,7 @@ type DayRow = Omit<Day, 'skills_review'> & { skills_review: string }
 
 const toDay = ({ skills_review, ...rest }: DayRow): Day => ({ ...rest, skills_review: JSON.parse(skills_review) as string[] })
 
-/** One row per sleep or nap: the journal of the day that ended. */
+/** One row per sleep, nap or death: the journal of the day that ended. */
 export class DayRepo {
   readonly #db: DatabaseSync
 

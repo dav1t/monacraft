@@ -5,7 +5,16 @@ import { createRepos, type Day, type DayKind } from '../src/db/repos.ts'
 import { watchDeaths, type DeathBot } from '../src/death.ts'
 
 function setup({ busy = false } = {}) {
-  const bot = Object.assign(new EventEmitter(), { username: 'MonaCraft1', entity: { position: { x: 23.4, y: 69, z: -714.6 } } })
+  const items = [
+    { name: 'cobblestone', count: 40 },
+    { name: 'iron_pickaxe', count: 1 },
+    { name: 'cobblestone', count: 12 },
+  ]
+  const bot = Object.assign(new EventEmitter(), {
+    username: 'MonaCraft1',
+    entity: { position: { x: 23.4, y: 69, z: -714.6 } },
+    inventory: { items: () => items },
+  })
   const repos = createRepos(openDatabase(':memory:'))
   const naps: DayKind[] = []
   const sleep = { busy, run: async (kind: DayKind) => (naps.push(kind), {} as Day) }
@@ -27,7 +36,15 @@ describe('watchDeaths', () => {
     await later(40)
     expect(lastEvent(repos)).toBe('you died (shot by Skeleton) at 23 69 -715 and respawned; your items dropped there. Think about what killed you and how to avoid it.')
     expect(logs).toContain('💀 died (shot by Skeleton) at 23 69 -715 — reflecting')
-    expect(naps).toEqual(['nap'])
+    expect(naps).toEqual(['death'])
+  })
+
+  it('keeps the death as a scar with what it carried', async () => {
+    const { bot, repos, deathMessage, later } = setup()
+    bot.emit('death')
+    deathMessage('MonaCraft1 was shot by Skeleton')
+    await later(40)
+    expect(repos.scars.list()).toMatchObject([{ cause: 'died (shot by Skeleton)', place: '23 69 -715', lost: '52 cobblestone, 1 iron_pickaxe', meaning: null }])
   })
 
   it('uses a death message that arrived just before the death event', async () => {
@@ -54,11 +71,11 @@ describe('watchDeaths', () => {
     first.setNow(60_000)
     first.bot.emit('death')
     await first.later(40)
-    expect(first.naps).toEqual(['nap'])
+    expect(first.naps).toEqual(['death'])
     first.setNow(10 * 60_000)
     first.bot.emit('death')
     await first.later(40)
-    expect(first.naps).toEqual(['nap', 'nap'])
+    expect(first.naps).toEqual(['death', 'death'])
 
     const busy = setup({ busy: true })
     busy.bot.emit('death')

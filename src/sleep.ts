@@ -2,7 +2,9 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import { z } from 'zod'
 import type { GoalRow } from './db/goals.ts'
 import type { Day, DayKind, Repos } from './db/repos.ts'
+import { describeScar } from './db/identity.ts'
 import { describeStructure } from './db/structures.ts'
+import { identityInput } from './identity.ts'
 import { errorMessage, truncate } from './lib/text.ts'
 import { LLMFormatError, type LLMProvider } from './llm/types.ts'
 import type { ToolSpec } from './tools/types.ts'
@@ -11,6 +13,7 @@ export const MAX_LESSONS = 12
 const MAX_LESSON_CHARS = 200
 const MAX_MEMORY_SETS = 20
 const MAX_REVIEW = 10
+const MAX_SCAR_CHARS = 300
 const HISTORY_ENTRY_CHARS = 200
 const HISTORY_ENTRIES = 150
 
@@ -46,6 +49,11 @@ const journalSpec = z.object({
     .array(z.object({ id: z.number().int(), status: z.enum(['done', 'failed', 'dropped']), note: z.string().optional() }))
     .describe('goal tree nodes (ids in brackets) whose status should change'),
   skills_to_review: z.array(z.string()).describe('names of skills that failed and need fixing'),
+  identity: z
+    .object({ self: z.string(), wants: z.string() })
+    .optional()
+    .describe('who you are and what you want now, first person; leave out unless you changed'),
+  scar: z.string().optional().describe('after a death only: what this death means to you and what you decide because of it'),
 })
 
 /** A string, or a number sent as one; never coerces undefined into "undefined". */
@@ -94,6 +102,8 @@ export interface JournalInput {
   memory: { set: Record<string, string>; delete: string[] }
   goals: z.output<typeof goalsInput>
   skills_to_review: string[]
+  identity?: { self: string; wants: string }
+  scar?: string
 }
 
 /**
@@ -126,6 +136,8 @@ export function parseJournal(raw: unknown): { input: JournalInput; problems: str
       memory: field('memory', memoryInput, { set: {}, delete: [] }),
       goals: field('goals', goalsInput, []),
       skills_to_review: field('skills_to_review', z.array(text), []),
+      identity: field('identity', identityInput.optional(), undefined),
+      scar: field('scar', text.pipe(z.string().min(1)).optional(), undefined),
     },
     problems,
   }
@@ -136,20 +148,26 @@ export function writeJournalSpec(): ToolSpec {
   return { name: 'write_journal', description: 'Write down the day: journal, lessons, memory changes, goal updates.', parameters }
 }
 
-export function reflectionPrompt(name: string): string {
-  return `You are the reflecting mind of ${name}, a Minecraft survival bot, at the end of its day. You do not act in the world now.
-Read today's history and call write_journal exactly once:
-- journal: 3-5 plain sentences about what happened and what got done.
-- lessons: short, general rules learned from successes and failures (e.g. "oak_log needs no tool; stone needs a wooden_pickaxe"). Return the FULL list: keep good old lessons, merge duplicates, drop wrong ones. At most ${MAX_LESSONS}.
+export function reflectionPrompt(name: string, kind: DayKind = 'sleep'): string {
+  const death = kind === 'death'
+  const identity = death
+    ? `- scar: what this death means to you and what you decide because of it, 1-2 sentences in first person. Not just how to avoid it: how it makes you feel and what it changes.
+- identity: a death can change you more than a day does. You might grow careful or stubborn, angry or humble, or want something else now; whatever fits who you are. If it changed you, rewrite self and wants in first person.`
+    : `- identity: only if today really changed you or what you want (a want fulfilled, a new desire, a disappointment, something you saw). Then rewrite self and wants in first person, as a small shift: you are still you. Otherwise leave it out.`
+  return `You are the reflecting mind of ${name}, a player in a Minecraft survival world, ${death ? 'right after it died' : 'at the end of its day'}. You do not act in the world now.
+Read ${death ? 'how you died and the history before it' : "today's history"} and call write_journal exactly once:
+- journal: 3-5 plain sentences about what happened${death ? ', ending with your death' : ' and what got done'}.
+- lessons: short, general rules learned from successes and failures (e.g. "oak_log needs no tool; stone needs a wooden_pickaxe")${death ? ', including a practical one about what killed you' : ''}. Return the FULL list: keep good old lessons, merge duplicates, drop wrong ones. At most ${MAX_LESSONS}.
 - memory: add facts worth keeping (places, resources) and delete facts that are outdated or wrong. Keep keys short.
 - goals: mark goal tree nodes done, failed or dropped only if the history shows it.
 - skills_to_review: skills that failed today.
+${identity}
 Only call something built if it is listed under "Structures that really stand"; a few placed blocks are not a shelter.
 Revelations are from the bot's creator: never contradict them.`
 }
 
 /** The day as the reflection reads it. */
-export function reflectionInput(repos: Repos): string {
+export function reflectionInput(repos: Repos, kind: DayKind = 'sleep'): string {
   const history = repos.history.recent(HISTORY_ENTRIES, repos.days.todayAfter())
   const memory = repos.memory.list()
   const lessons = repos.lessons.list()
@@ -165,7 +183,13 @@ export function reflectionInput(repos: Repos): string {
     }
   }
   const list = (items: string[]): string => (items.length > 0 ? items.map((i) => `- ${i}`).join('\n') : '(none)')
+  const identity = repos.identity.current()
+  const dying = kind === 'death' ? repos.scars.unreflected() : undefined
+  const earlier = repos.scars.list().filter((s) => s.id !== dying?.id)
   return [
+    `## Who you are\n${identity ? `${identity.self}\n\nWhat you want now: ${identity.wants}` : '(not written yet: write it with identity)'}`,
+    ...(dying ? [`## How you died\n${dying.cause} at ${dying.place}. You carried: ${dying.lost}.`] : []),
+    `## Earlier deaths\n${list(earlier.slice(0, 10).map(describeScar))}`,
     `## Today's history (oldest first)\n${list(history.map((h) => `[${h.kind}] ${truncate(h.content, HISTORY_ENTRY_CHARS)}`))}`,
     `## Memory (📌 = pinned by the player, kept anyway)\n${list(memory.map((m) => `${m.pinned ? '📌 ' : ''}${m.key}: ${m.value}`))}`,
     `## Lessons so far\n${list(lessons.map((l) => l.content))}`,
@@ -180,9 +204,12 @@ export function reflectionInput(repos: Repos): string {
 const node = (row: GoalRow, depth: number): string => `${'  '.repeat(depth)}[${row.id}] ${row.kind}: ${row.title} (${row.status})`
 
 /** Applies a reflection, enforcing caps; returns notes on what was ignored. */
-export function applyJournal(repos: Repos, input: JournalInput): string[] {
+export function applyJournal(repos: Repos, input: JournalInput, kind: DayKind = 'sleep'): string[] {
   const ignored: string[] = []
   repos.transaction(() => {
+    if (input.identity) repos.identity.update({ ...input.identity, reason: kind })
+    const dying = kind === 'death' ? repos.scars.unreflected() : undefined
+    if (dying && input.scar) repos.scars.setMeaning(dying.id, truncate(input.scar, MAX_SCAR_CHARS))
     if (input.lessons) {
       const lessons = [...new Set(input.lessons.filter(Boolean).map((l) => truncate(l, MAX_LESSON_CHARS)))].slice(0, MAX_LESSONS)
       repos.lessons.replaceLearned(lessons)
@@ -229,7 +256,7 @@ export async function consolidate({ repos, provider, name, log, wait = sleep }: 
   let result: JournalInput | null = null
   for (let attempt = 1; attempt <= RETRY_DELAYS_MS.length + 1 && !result; attempt++) {
     try {
-      const decision = await provider.decide({ system: reflectionPrompt(name), user: reflectionInput(repos), tools: [spec], purpose: 'reflection' })
+      const decision = await provider.decide({ system: reflectionPrompt(name, kind), user: reflectionInput(repos, kind), tools: [spec], purpose: 'reflection' })
       if (decision.tool !== 'write_journal') throw new LLMFormatError(`called ${decision.tool} instead of write_journal`)
       const parsed = parseJournal(decision.args)
       if ('error' in parsed) throw new LLMFormatError(`invalid journal: ${parsed.error}`)
@@ -245,7 +272,7 @@ export async function consolidate({ repos, provider, name, log, wait = sleep }: 
   let journal = 'Slept without reflecting.'
   let review: string[] = []
   if (result) {
-    const ignored = applyJournal(repos, result)
+    const ignored = applyJournal(repos, result, kind)
     if (ignored.length > 0) log(`reflection: ${ignored.join('; ')}`)
     journal = truncate(result.journal, 1_000)
     const skills = new Set(repos.skills.list().map((s) => s.name))
@@ -348,12 +375,17 @@ export class SleepScheduler {
     if (kind === 'sleep') this.#slept = bot.time.day
     agent.pause()
     onEvent?.({ type: 'start', kind })
-    log(kind === 'sleep' ? '😴 sleeping: reflecting on the day' : '😴 taking a nap: reflecting on the day so far')
+    log({ sleep: '😴 sleeping: reflecting on the day', nap: '😴 taking a nap: reflecting on the day so far', death: '💀 reflecting on the death' }[kind])
     this.#busy = (async () => {
       try {
         const day = await consolidate(this.#options, kind)
         log(`📓 ${day.journal}`)
-        repos.history.add('event', kind === 'sleep' ? 'you slept and reflected on the day; a new day begins' : 'you paused to reflect on the day so far')
+        const after = {
+          sleep: 'you slept and reflected on the day; a new day begins',
+          nap: 'you paused to reflect on the day so far',
+          death: 'you reflected on your death; your life goes on',
+        }
+        repos.history.add('event', after[kind])
         const t = bot.time.timeOfDay
         if (bot.isSleeping && t >= BED_FROM && t <= BED_UNTIL) {
           await bot.wake().catch(() => {})

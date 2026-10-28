@@ -330,6 +330,11 @@ main { padding: 0 20px 24px; }
 .review { margin: 0 0 6px; }
 .kind.sleep { background: #2c2f6b; }
 .kind.nap { background: #5a5a8f; }
+.kind.death { background: #8f2f2f; }
+.kind.birth { background: #3d8c46; }
+.identity-self { margin: 4px 0 8px; white-space: pre-wrap; }
+.identity-wants { margin: 0 0 8px; white-space: pre-wrap; }
+.identity-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
 .kind.player { background: #6b3d9c; }
 .kind.goal { background: #9c6b3d; }
 .kind.subgoal { background: #3d8c46; }

@@ -8,7 +8,8 @@ export function buildSystemPrompt(name: string): string {
 How to play:
 - Survive first: keep food above 14, avoid or fight hostile mobs, be safe at night. Reflexes already eat and fight back automatically when needed.
 - Players are your friends. When someone talks to you, answer with say (one short sentence) and help with what they ask.
-- You decide what to do with your life here. A goal (set_goal) helps you keep track of a bigger plan, but you don't need one. For reference, tools come from logs → planks → crafting_table → wooden_pickaxe → cobblestone → stone tools → furnace → iron.
+- Your life is your own. "Who you are" in your prompt is you, in your own words: let it and what you want choose what you do. Survival and tools are means, not the point; get gear only as far as what you want needs it. A goal (set_goal) helps you keep track of a bigger plan, but you don't need one.
+- When what you want changes, follow it: drop or pause a goal that no longer matters to you.
 - For a new goal, name an item in set_goal ("get stone_pickaxe") and the plan is made for you; for other goals call plan_goal with a few sub-goals. Use plan_item to learn exactly how to get any item.
 - The goal tree is your own plan, not orders. Work on the ▶ sub-goal by default, and change course when the situation calls for it (night, danger, a player's request, something missing that you cannot get yet): switch_subgoal to work on another open sub-goal, plan_goal to reorder or rewrite the rest, set_goal for something more urgent (your goal is paused, and set_goal with its title resumes it). Say why when you change course.
 - Plan a big job before starting it: work out everything it needs (materials and amounts, tools, the order). plan_item gives exact amounts for items; a build tells you how many blocks it needs.
@@ -42,7 +43,7 @@ Explain each choice in one short sentence (your message text, or "thought").`
 }
 
 /** Hard caps per prompt section, so the prompt stays about the same size day after day. */
-export const CAPS = { journal: 600, lessons: 10, memory: 20, skills: 8, templates: 3, history: 30, structures: 5, containers: 5 } as const
+export const CAPS = { journal: 600, lessons: 10, memory: 20, skills: 8, templates: 3, history: 30, structures: 5, containers: 5, scars: 5 } as const
 
 export interface PromptMemory {
   key: string
@@ -54,6 +55,10 @@ export interface PromptInput {
   snapshot: unknown
   /** The goal tree section (starting with "## Goal"), or null when there is no goal. */
   goal: string | null
+  /** The bot's own self-description and wants; null before it is born. */
+  identity?: { self: string; wants: string } | null
+  /** Its deaths (one line each), most recent first. */
+  scars?: string[]
   /** Shown when there is no goal, e.g. "last goal reached: …". */
   goalNote?: string | null
   /** Pinned first, then most recently updated. */
@@ -95,7 +100,13 @@ export function buildUserPrompt(input: PromptInput): string {
   if (input.revelations && input.revelations.length > 0) {
     sections.push(`## Revelations — from your creator, highest priority\n${list(input.revelations)}`)
   }
-  // Changed by sleep.
+  // Changed by sleep and death.
+  if (input.identity) sections.push(`## Who you are\n${input.identity.self}\n\nWhat you want now: ${input.identity.wants}`)
+  if (input.scars && input.scars.length > 0) {
+    const hidden = input.scars.length - CAPS.scars
+    const more = hidden > 0 ? `\n(${hidden} older deaths — recall to find them)` : ''
+    sections.push(`## Scars — deaths that shaped you\n${list(input.scars.slice(0, CAPS.scars))}${more}`)
+  }
   if (input.lessons && input.lessons.length > 0) sections.push(`## Lessons you learned\n${list(input.lessons.slice(-CAPS.lessons))}`)
   if (input.journal) sections.push(`## Yesterday\n${truncate(input.journal, CAPS.journal)}`)
 

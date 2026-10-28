@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Day, Lesson } from '../../../src/web/protocol.ts'
   import { api, attempt, sqlTime } from '../lib/api.ts'
+  import IdentityPanel from './IdentityPanel.svelte'
   import { panel } from '../lib/panel.svelte.ts'
   import { ask, toast } from '../lib/ui.svelte.ts'
 
@@ -48,7 +49,7 @@
 <div class="journal-grid">
   <div class="mc-panel">
     <div class="panel-title">
-      Journal <span class="dim">one entry per sleep or nap</span>
+      Journal <span class="dim">one entry per sleep, nap or death</span>
       <button class="mc-btn small" disabled={!online || napping} onclick={nap}>{napping ? 'Reflecting…' : 'Nap now'}</button>
     </div>
     {#each days as day (day.id)}
@@ -65,6 +66,8 @@
   </div>
 
   <div class="journal-side">
+    <IdentityPanel />
+
     <div class="mc-panel">
       <div class="panel-title">Lessons <span class="dim">shown to the bot every step (10 newest)</span></div>
       <ol class="lessons">

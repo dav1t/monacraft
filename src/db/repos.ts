@@ -2,11 +2,13 @@ import type { DatabaseSync } from 'node:sqlite'
 import { ContainerRepo } from './containers.ts'
 import { DayRepo, LessonRepo } from './days.ts'
 import { GoalRepo, TemplateRepo } from './goals.ts'
+import { IdentityRepo, ScarRepo } from './identity.ts'
 import { StructureRepo } from './structures.ts'
 import { UsageRepo } from './usage.ts'
 
 export type { StoredContainer } from './containers.ts'
 export type { Day, DayKind, Lesson, LessonSource } from './days.ts'
+export type { Identity, IdentityReason, Scar } from './identity.ts'
 export type { Structure } from './structures.ts'
 export type { ModelStats } from './usage.ts'
 export type { GoalKind, GoalRow, GoalStatus, PlanTemplate, TemplateKind } from './goals.ts'
@@ -219,6 +221,8 @@ export interface Repos {
   templates: TemplateRepo
   days: DayRepo
   lessons: LessonRepo
+  identity: IdentityRepo
+  scars: ScarRepo
   structures: StructureRepo
   containers: ContainerRepo
   usage: UsageRepo
@@ -236,6 +240,8 @@ export function createRepos(db: DatabaseSync): Repos {
     templates: new TemplateRepo(db),
     days: new DayRepo(db),
     lessons: new LessonRepo(db),
+    identity: new IdentityRepo(db),
+    scars: new ScarRepo(db),
     structures: new StructureRepo(db),
     containers: new ContainerRepo(db),
     usage: new UsageRepo(db),

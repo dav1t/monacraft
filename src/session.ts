@@ -7,6 +7,7 @@ import type { Repos } from './db/repos.ts'
 import { watchDamage } from './damage.ts'
 import { watchDeaths } from './death.ts'
 import { Eyes, startEyes } from './eyes.ts'
+import { ensureIdentity } from './identity.ts'
 import { formatPos } from './lib/mc.ts'
 import { errorMessage } from './lib/text.ts'
 import type { LLMProvider } from './llm/types.ts'
@@ -44,6 +45,7 @@ export async function startSession({ minecraft, provider, repos, log, onAgentEve
   log(`spawned at ${formatPos(bot.entity.position)}`)
   await bot.waitForChunksToLoad()
   repos.history.add('event', `connected at ${formatPos(bot.entity.position)}`)
+  await ensureIdentity({ repos, provider, name: bot.username, log })
 
   const eyes = new Eyes()
   const agent = new Agent({

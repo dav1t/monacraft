@@ -1,6 +1,7 @@
 import { setTimeout as sleep } from 'node:timers/promises'
 import type { Repos } from '../db/repos.ts'
 import { describeContainer } from '../db/containers.ts'
+import { describeScar } from '../db/identity.ts'
 import { describeStructure } from '../db/structures.ts'
 import { Mutex } from '../lib/mutex.ts'
 import { errorMessage, truncate } from '../lib/text.ts'
@@ -158,6 +159,8 @@ export class Agent {
           chat,
           revelations: repos.revelations.list().map((r) => r.content),
           journal: repos.days.latest()?.journal ?? null,
+          identity: repos.identity.current() ?? null,
+          scars: repos.scars.list().map(describeScar),
           lessons: repos.lessons.list().map((l) => l.content),
           structures: repos.structures.list().map(describeStructure),
           containers: repos.containers.list().map(describeContainer),

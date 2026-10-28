@@ -1,7 +1,7 @@
 // Types shared by the panel server and the Svelte UI. Keep this file free of runtime imports.
 import type { ConnectOptions } from '../bot/connect.ts'
 import type { GoalTree } from '../agent/goals.ts'
-import type { Day, GoalRow, GoalStatus, HistoryEntry, Lesson, MemoryEntry, ModelStats, PlanTemplate, Revelation, Skill, Structure } from '../db/repos.ts'
+import type { Day, GoalRow, GoalStatus, HistoryEntry, Identity, Lesson, MemoryEntry, ModelStats, PlanTemplate, Revelation, Scar, Skill, Structure } from '../db/repos.ts'
 import type { ModelInfo } from '../llm/models.ts'
 import type { AnthropicSettings, OllamaSettings, OpenAISettings, OpenRouterSettings, ProviderId } from '../llm/providers.ts'
 import type { Decision, StreamDelta } from '../llm/types.ts'
@@ -14,6 +14,7 @@ export type {
   GoalStatus,
   GoalTree,
   HistoryEntry,
+  Identity,
   Lesson,
   MemoryEntry,
   ModelInfo,
@@ -22,6 +23,7 @@ export type {
   PlayerState,
   ProviderId,
   Revelation,
+  Scar,
   Skill,
   SlotItem,
   StreamDelta,
@@ -100,7 +102,8 @@ export interface PublicSettings {
   }
 }
 
-export type DbTable = 'memory' | 'skills' | 'history' | 'revelations' | 'goals' | 'days' | 'lessons' | 'templates' | 'structures' | 'llm_calls'
+export type DbTable =
+  | 'memory' | 'skills' | 'history' | 'revelations' | 'goals' | 'days' | 'lessons' | 'templates' | 'structures' | 'llm_calls' | 'identity' | 'scars'
 
 export interface Snapshot {
   status: Status

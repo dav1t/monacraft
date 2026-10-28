@@ -37,6 +37,8 @@ class Panel {
     templates: 0,
     structures: 0,
     llm_calls: 0,
+    identity: 0,
+    scars: 0,
   })
 
   connect(): void {

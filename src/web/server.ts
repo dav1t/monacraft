@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { extname, join, normalize, sep } from 'node:path'
 import { z } from 'zod'
+import { MAX_SELF_CHARS, MAX_WANTS_CHARS } from '../identity.ts'
 import { errorMessage } from '../lib/text.ts'
 import type { Controller } from './controller.ts'
 import { itemIcon } from './icons.ts'
@@ -34,6 +35,7 @@ const goalEdit = z.object({
   status: z.enum(['todo', 'active', 'done', 'failed', 'dropped', 'paused']).optional(),
 })
 const pin = z.object({ pinned: z.boolean() })
+const identityEdit = z.object({ self: z.string().trim().min(1).max(MAX_SELF_CHARS), wants: z.string().trim().min(1).max(MAX_WANTS_CHARS) })
 const providerId = z.enum(['ollama', 'openai', 'anthropic', 'openrouter'])
 
 /** Runs a goal-tree change; its errors (no active goal, offline…) are the client's to fix. */
@@ -157,6 +159,18 @@ function routes(controller: Controller): [string, RegExp, Handler][] {
     ['DELETE', /^\/api\/lessons\/(\d+)$/, ({ params }) => {
       const result = found(repos.lessons.delete(Number(params[0])), 'lesson')
       controller.changed('lessons')
+      return result
+    }],
+    ['GET', /^\/api\/identity$/, () => repos.identity.list(50)],
+    ['PUT', /^\/api\/identity$/, ({ body }) => {
+      repos.identity.update({ ...parse(identityEdit, body), reason: 'player' })
+      controller.changed('identity')
+      return { ok: true }
+    }],
+    ['GET', /^\/api\/scars$/, () => repos.scars.list()],
+    ['DELETE', /^\/api\/scars\/(\d+)$/, ({ params }) => {
+      const result = found(repos.scars.delete(Number(params[0])), 'scar')
+      controller.changed('scars')
       return result
     }],
     ['GET', /^\/api\/structures$/, () => repos.structures.list()],

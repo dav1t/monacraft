@@ -148,6 +148,8 @@ export class Controller {
     this.#session = session
     this.#brain = 'idle'
     this.#setStatus('online')
+    // Connecting may have given birth to the bot.
+    this.changed('identity')
     this.#stateTimer = setInterval(() => this.#emitState(), STATE_INTERVAL_MS)
     void this.#runAgent(session)
   }
@@ -376,12 +378,13 @@ export class Controller {
       this.#sleeping = true
       this.#brain = 'sleeping'
       this.#emitStatus()
+      if (event.kind === 'death') this.changed('scars')
       return
     }
     this.#sleeping = false
     this.#brain = 'idle'
     this.#emitStatus()
-    for (const table of ['days', 'lessons', 'memory', 'goals', 'history', 'templates'] as const) this.changed(table)
+    for (const table of ['days', 'lessons', 'memory', 'goals', 'history', 'templates', 'identity', 'scars'] as const) this.changed(table)
   }
 
   #emitState(): void {
